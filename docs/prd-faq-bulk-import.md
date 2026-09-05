@@ -40,24 +40,44 @@ A second problem sits behind the first, and it is the more important one. **The 
 
 ---
 
-## 4. Two different rights: seeing and approving
+## 4. Two different review questions
 
 The vision — the client shares documents and the tool curates them — moves work onto a surface that has deliberately been superadmin-only ([prd-faq-admin-ui.md](prd-faq-admin-ui.md) §3). It is worth being precise about what changes, because it is not one more screen: it is who stands behind the guarantee.
 
-The clean way to think about it is that these are **two separate rights**, and conflating them is what makes the question feel hard:
+**This section amends two earlier documents** and should be read as doing so explicitly: [prd-faq-admin-ui.md](prd-faq-admin-ui.md) §13 question 1 leaves "should a tenant admin get a read-only view?" open, and [prd-faq-content-ingestion.md](prd-faq-content-ingestion.md) §5 recommends human review without saying *which* human. This is the answer to both.
 
-**Visibility is unconditional.** The business should always be able to see what its bot knows, regardless of who loaded it. This is not a courtesy. It is the only mechanism that catches a specific and dangerous failure: **an answer that is perfectly well-formed and factually wrong.** The lint checks shape — length, prices, imperatives, placeholders. It cannot check truth. Neither can we. The only party who knows that the warranty is six months and not nine is the client, and today they have no way to look.
+### 4.1 The mistake worth avoiding
 
-**Authority to publish depends on who wrote the content**, not on who uploaded the file:
+The tempting framing is a single axis — "who is allowed to approve?" — settled by who wrote the content. It does not survive contact with the actual cases.
 
-| Origin | Who wrote it | Who can approve |
-|---|---|---|
-| Template the client filled in | the client | **The client can approve their own.** It is their business and they are the authority on whether it is true. The lint still applies: it validates form, not fact. |
-| Unstructured document → LLM extraction | **the tool** | **Not the person who never read the source.** A model derived the candidate, and a fabrication sounds, by construction, reasonable. It needs someone comparing it against the cited excerpt. |
+The motivating example in §1 is a staff member typing a client's document into the tool for one to two hours. Who wrote that? The client authored the source; an operator transcribed it. **Transcription is not verification** — nobody checked whether the client's document was still accurate, and a typo in an operator's transcription is invisible to everyone downstream.
 
-That distinction prevents the worst available outcome: a client bulk-approving answers a model invented about their own business, convinced they wrote them.
+Worse, **the system cannot tell the cases apart after the fact.** `FaqChunk` records `reviewed_by`, `updated_by` and `superseded_by`. There is **no `created_by`**. Any rule keyed on authorship is unenforceable today, because the data to enforce it does not exist.
 
-A design consequence: **the two ingest modes do not share one screen**, even though the vision naturally merges them. They carry different risks, different warnings and different review paths, and presenting both as "upload a file" makes them look more alike than they are.
+### 4.2 The framing that does work
+
+There are **two different questions** a reviewer can be asked, they need different people, and collapsing them is the error:
+
+| Question | What it takes | Who can answer it | Applies to |
+|---|---|---|---|
+| **Is this grounded in the source it claims to come from?** | the source document, next to the candidate | whoever holds the source — today, the operator who uploaded it | only content a model derived (`source_type = DOCUMENT`) |
+| **Is this true about this business?** | knowing the business | **only the business.** Nobody else, ever | **everything**, regardless of origin |
+
+The first question is what the extraction pipeline's `source_span` exists for, and the review queue already lays it out for exactly that comparison. It is bounded and mechanical: does the answer say what the excerpt says?
+
+The second is unbounded and cannot be delegated. **The lint validates shape — length, prices, imperatives, placeholders. It cannot validate truth, and neither can we.** The only party who knows the warranty is six months and not nine is the client. This is why §5 is not a courtesy feature: business visibility *is* the mechanism for the second question, and without it the second question simply never gets asked.
+
+### 4.3 What follows
+
+- **Extraction-derived content requires a comparison review before approval**, performed by whoever holds the source. The system can enforce this: it records `source_type`, so `DOCUMENT` chunks are identifiable without any new field.
+- **All content requires business confirmation**, but confirmation is not the same as gating. Making it a blocking step for every chunk would stall loading behind a client's inbox. The workable shape is: content is approved by the operator, is immediately visible to the business (§5), and the business has a low-friction way to say "that is wrong" — which is a correction loop, not an approval queue.
+- **`created_by` should be recorded** — who loaded a chunk, and when a superadmin acts for a tenant, on whose behalf. Without it none of the above is auditable, and PRD 3 §12 already flagged the identical gap for *edits*. Adding it for imports at the same time is cheap; discovering later that no import can be traced is not.
+
+**A design consequence that survives all of this:** the two ingest modes do not share one screen, even though the vision naturally merges them. They carry different risks, different warnings and different review paths, and presenting both as "upload a file" makes them look more alike than they are.
+
+### 4.4 The honest limit of this document
+
+Letting a tenant admin *approve* — rather than see and flag — needs a tenant-facing review screen, and **no phase in §9 builds one.** PRD 3 gates every review surface to superadmin at the controller. Until that screen exists, "the client can approve their own content" is an aspiration, not a shipped capability, and this document should not imply otherwise. §9 phase G scopes it; §13 question 4 is where the decision belongs.
 
 ---
 
@@ -101,9 +121,11 @@ The template is offered as CSV today. CSV is a programmer's format: it breaks on
 
 **Proposal: ship the template as XLSX** with the four columns already labelled in Spanish, an instructions sheet, and three example rows. Accept both XLSX and CSV on upload.
 
-That means adding XLSX parsing, which [prd-faq-content-ingestion.md](prd-faq-content-ingestion.md) deferred deliberately. The reason to do it now is different from the reason to defer it then: back then the consumer was an internal operator who can export to CSV without complaining. Here the consumer is the client, and the format is part of whether the feature gets used at all.
+That means adding XLSX parsing. Worth being accurate about its status: [prd-faq-content-ingestion.md](prd-faq-content-ingestion.md) §4.2 specifies "CSV or XLSX" and its phasing lists "Structured file upload (CSV/XLSX)" — XLSX was in scope from the start. Shipping CSV-only was a ruling made during implementation, on the grounds that the consumer was an internal operator who can export to CSV without complaining. **So this is not new scope; it is finishing PRD 2 phase 1.** And the reason it now matters is that the consumer changed: the client is the one filling it in, and the format decides whether the feature gets used at all.
 
 **Cheaper alternative, to be decided:** ship the template as a Google Sheet with "download as CSV" spelled out on the instructions tab. Zero new code, more steps for the client. It is a product decision about who absorbs the friction (§13, question 1).
+
+The XLSX detail above is written out because it is the option that needs design; it should not be read as the decision having been made. If the Sheet wins, phase E collapses to writing the instructions tab and everything else in this subsection is discarded.
 
 ### 6.3 The preview — the core of this proposal
 
@@ -114,7 +136,17 @@ POST /tenants/:slug/faq/import?dryRun=true   → analyse, do NOT write
 POST /tenants/:slug/faq/import               → write
 ```
 
-The response already carries almost everything needed (`total`, `imported`, `rejected[]` with row number and findings, `warnings[]`). What is missing is not writing.
+Those signatures are **illustrative, not settled** — they assume the superadmin path. If the client-facing upload of phase F lands on a tenant-context route instead, the shape changes; the split into analyse-then-write is the requirement, not the URL.
+
+The response already carries almost everything needed (`total`, `imported`, `rejected[]` with row number and findings, `warnings[]`). What is missing is not writing — and that part is genuinely small: the write is a single isolated block in `importCsv`, so `dryRun` skips it without touching the validation path.
+
+**Two consequences of splitting it that the implementation has to answer:**
+
+**The file gets uploaded twice.** Preview and confirm are separate requests, and nothing carries the parsed file between them. Re-uploading is the simple answer and keeps the file as the source of truth, but it means nothing guarantees the confirmed file is the previewed one. The alternative — holding the parsed batch server-side against a token — adds state and an expiry policy. Re-uploading is probably right; it should be a decision rather than an accident.
+
+**A confirmed import can still fail halfway.** `upsertBatch` writes row by row **without a transaction**. The code already knows this and says so: on a mid-import failure it logs and returns an error naming the `batchId`, precisely so the partial rows can be found. But a preview that says "80 rows will be loaded" followed by a partial failure leaves the user with an unknown subset and an error message full of an identifier they did not ask for.
+
+The preview makes this worse rather than better, because it raises the expectation that the outcome is known in advance. Minimum acceptable handling: the result screen reports what actually landed rather than what was promised, and offers to withdraw the batch (§6.5).
 
 Before confirming, the screen shows:
 
@@ -132,6 +164,19 @@ So: **if a row passes the preview, it will pass review, unless it carries an unr
 Everything lands as `PENDING_REVIEW` under a shared `source_ref` (`import:<uuid>`), which is what lets it be reviewed as a batch and, later, re-uploaded in a corrected version without duplicating — PRD 2 phase 4 already does that.
 
 From the result screen, a direct link to the queue filtered by that `source_ref`: the work just created, scoped.
+
+### 6.5 Withdrawing a batch
+
+**There is no way to undo an upload.** Deletion is per-chunk, and a bad batch of eighty rows is eighty clicks. That is a gap in the current system, not just in this proposal, and bulk loading is what makes it urgent: the whole point is that a single action now creates many rows, and the inverse action does not exist.
+
+Every import already carries a shared `source_ref`, so the grouping is there — nothing new is needed to identify a batch. What is missing is an operation over it.
+
+Two cases need it:
+
+- **"I uploaded the wrong file."** Noticed immediately, nothing approved yet. Withdrawing should be one action.
+- **A partial write after a failed confirm** (§6.3). The error already names the `batchId`; without a withdraw operation the only remedy is manual cleanup, which is exactly what the error message currently asks a human to do.
+
+**Withdraw means archive, not delete** — nothing in this system is hard-deleted, and a batch that was partly approved and served to customers is precisely the history the retention design exists to keep. Chunks already approved and serving need a confirmation naming how many are live, not a silent archive.
 
 ---
 
@@ -161,16 +206,20 @@ The lint catching it is the safety net. The template explaining it is what stops
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Superadmin route `POST /tenants/:slug/faq/import` + upload and result screen, CSV, with the template visible on the page | Removes today's 1-2 hours of typing. Small: the service exists and the route mirrors the seven already there |
-| **B** | Preview (`dryRun`) before committing | The core request. Requires splitting `importCsv` into analyse and write |
-| **C** | Read-only knowledge view for the tenant's `admin` role | Closes the "I cannot see what my bot knows" gap. Independent of the upload work and deliverable on its own |
-| **D** | XLSX template + XLSX parsing + instructions sheet | Turns it into something the client uses without help |
-| **E** | Client-facing upload (tenant `admin`), mode A only | Needs §4 settled and phase B working: no preview, no client upload |
-| **F** | Mode B: PDF/DOCX parsing over the existing extraction pipeline | The riskiest and least needed: the good content is usually already written down |
+| **A** | Superadmin route `POST /tenants/:slug/faq/import` + upload and result screen, CSV, with the template visible on the page | Removes today's 1-2 hours of typing. Small: the service exists and the route mirrors the nine already there |
+| **B** | Preview (`dryRun`) before committing, plus batch withdraw (§6.5) | The core request. Withdraw ships with it because the preview raises the expectation that outcomes are known in advance, and a partial write breaks that promise |
+| **C** | `created_by` on chunks, and on-behalf-of when a superadmin acts for a tenant (§4.3) | Small, and everything about accountability depends on it. Cheap now, expensive to backfill |
+| **D** | Read-only knowledge view for the tenant's `admin` role, with a "this is wrong" reporting channel | Closes the "I cannot see what my bot knows" gap. Independent of the upload work and deliverable on its own |
+| **E** | XLSX template + XLSX parsing + instructions sheet | Turns it into something the client uses without help |
+| **F** | Client-facing upload (tenant `admin`), mode A only | Needs phases B and D working: no preview and no visibility, no client upload |
+| **G** | Tenant-facing review screen — approve/reject for the tenant's own `admin` | **The phase that would make §4.2's second row real.** Deliberately last, and gated on question 4 in §13 |
+| **H** | Mode B: PDF/DOCX parsing over the existing extraction pipeline | The riskiest and least needed: the good content is usually already written down |
 
 Phase A alone changes today's working day. It is worth shipping before the rest is agreed.
 
-Phase C is deliberately placed before the client can upload anything. **Letting the business see the knowledge base is worth more than letting it load into it**, and it is the prerequisite for the trust that phase E assumes.
+**Phase D is deliberately placed before the client can upload anything.** Letting the business see the knowledge base is worth more than letting it load into one, and it is the prerequisite for the trust that phase F assumes. Its reporting channel is part of the phase, not an extra — §11 lists visibility-without-a-channel as a risk, and a phase that delivers the first without the second creates that risk rather than avoiding it.
+
+**Phases A through F deliver bulk loading; none of them delivers client approval.** Until phase G, a client-uploaded batch lands in a queue only a superadmin can clear. That is still a useful feature — the client stops waiting on us to type — but it is a smaller one than §4.2's table suggests, and the gap should be visible in the plan rather than discovered during phase F.
 
 ## 10. Metrics
 
@@ -183,9 +232,10 @@ Phase C is deliberately placed before the client can upload anything. **Letting 
 ## 11. Risks
 
 - **Flooding the queue.** Five hundred rows in one go is five hundred decisions for somebody. The 500 cap exists for this; with real bulk loading it is worth asking whether 500 is still sensible or should come down.
-- **The client approves without reading.** The risk scales with volume. Mitigated in mode A by the fact that they wrote it; in mode B by them not approving it (§7).
-- **Visibility without a channel is worse than no visibility.** If the business can see a wrong answer and has no way to say so, the feature produces frustration rather than corrections. The reporting path in §5 is not optional.
+- **Whoever approves does not read.** The risk scales with volume, and §4.1 rules out the comfortable answer that authorship makes it safe — a transcribed batch was written by nobody who checked it. Mitigated for extracted content by the comparison review (§4.2) and for everything else by the business seeing it afterwards (§5), which is a correction loop rather than a gate.
+- **Visibility without a channel is worse than no visibility.** If the business can see a wrong answer and has no way to say so, the feature produces frustration rather than corrections. The reporting path in §5 is not optional, which is why it ships inside phase D rather than after it.
 - **The template becomes a contract.** Once a client has filled it in, changing the columns breaks their work. Version it from the start.
+- **A confirmed import can land partially.** `upsertBatch` is not transactional (§6.3). The preview makes this sharper, not softer: it promises a known outcome and a mid-write failure breaks that promise. Batch withdraw (§6.5) is the floor, not a nicety.
 - **XLSX adds a dependency.** The first in this PRD. Pick a maintained library and scope what is parsed — one sheet, four columns — rather than supporting Excel.
 
 ## 12. Already built — do not rebuild
