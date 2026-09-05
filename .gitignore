@@ -1,0 +1,16 @@
+# Los dos repos de codigo viven aparte, cada uno con su propio remoto.
+# Este repo guarda SOLO la documentacion del workspace.
+soylaika.backend/
+soylaika.frontend/
+
+# Backups puntuales, no forman parte de la documentacion.
+*.rar
+
+# Config local de la maquina (los plugins habilitados son por instalacion).
+.claude/settings.local.json
+
+# Ruido habitual
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
