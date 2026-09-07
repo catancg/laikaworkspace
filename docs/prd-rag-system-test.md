@@ -5,7 +5,7 @@
 
 ## 1. Why this document exists
 
-Four PRDs have shipped. The RAG path now runs from a customer's spreadsheet, through a lint, a review queue and a superadmin approval gate, into a pgvector query that injects text into a live prompt. **No part of that path has ever been tested end to end.** The unit suite is green on 293 tests and has never once, on its own, caught a defect that mattered.
+Four PRDs have shipped. The RAG path now runs from a customer's spreadsheet, through a lint, a review queue and a superadmin approval gate, into a pgvector query that injects text into a live prompt. **No part of that path has ever been tested end to end.** The unit suite is green on 306 tests (at the time of writing) and has never once, on its own, caught a defect that mattered.
 
 That is not a rhetorical flourish, it is the record. Every defect of consequence in this system was found by *executing* something:
 
@@ -37,7 +37,7 @@ The exit condition is §11: a named list that must be green before the flag is f
 
 ## 4. The evidence ladder
 
-Each rung catches a class of defect the rung below is structurally incapable of catching. Placing a test on the wrong rung is how a suite gets to 293 green tests that prove less than they appear to.
+Each rung catches a class of defect the rung below is structurally incapable of catching. Placing a test on the wrong rung is how a suite gets to hundreds of green tests that prove less than they appear to.
 
 | Rung | Instrument | Proves | Structurally blind to |
 |---|---|---|---|
@@ -48,7 +48,7 @@ Each rung catches a class of defect the rung below is structurally incapable of 
 | 4 | Live OpenRouter + real Redis | threshold calibration, cache behaviour, timeout paths, cost | whether the answer is *true* |
 | 5 | A human reading bot output | truth about the business | nothing — this is the top, and it does not scale |
 
-**Rungs 2 and 3 do not exist today.** `test/` contains the untouched Nest scaffold (`app.e2e-spec.ts`, 29 lines, asserting `GET /` returns Hello World). `test:e2e` points at it. Every one of the 293 passing tests is rung 0 or 1. That gap is the single largest finding of this document, and §12 phases it.
+**Rungs 2 and 3 do not exist today.** `test/` contains the untouched Nest scaffold (`app.e2e-spec.ts`, 29 lines, asserting `GET /` returns Hello World). `test:e2e` points at it. Every passing test in the repo today is rung 0 or 1. That gap is the single largest finding of this document, and §12 phases it.
 
 **Rule for every test written under this PRD:** state which rung it sits on. A test that needs rung 2 evidence and is written with a mocked `db` is worse than no test, because it reports success about a claim it never examined.
 
@@ -82,8 +82,9 @@ So the invariant is not tested once. It is tested **after every transition that 
 | `approve` where a **previous version was live** | New yes, **previous no** (`supersedePrevious`, atomic) |
 | `reject` | No — `ARCHIVED` + `active = false` |
 | `DELETE /api/faq/:id` (soft, superadmin only) | No — `active = false`, `review_status` untouched |
-| `POST /api/faq/:id/pause` by a tenant `admin` | **No** — `active = false`; and a report is opened so platform is told |
-| Superadmin `PATCH {active: true}` on a paused chunk | Yes again — the only way back on |
+| `POST /api/faq/:id/pause` by a tenant `admin` | **No** — `active = false`, `review_status` untouched; and a report is opened so platform is told |
+| Pausing an already-paused chunk | Still no, **and no second report** — only a real transition reports |
+| Superadmin `PATCH {active: true}` on a paused chunk | Reachable again **only if `review_status` was already `APPROVED`** — reactivating something still `PENDING_REVIEW` does not publish it |
 | `withdrawBatch` | No — `active = false` **and** `ARCHIVED` |
 | `updateOne` on an approved chunk | **Yes, with new text** — this is why `PATCH` is now superadmin-only |
 | Re-ingest of an existing `(source_ref, source_ordinal)` whose live version is `APPROVED` | Old stays yes, new enters as `PENDING_REVIEW` |
@@ -92,6 +93,12 @@ So the invariant is not tested once. It is tested **after every transition that 
 The last row is the one most likely to be wrong and least likely to be noticed. It needs rung 2.
 
 **Every row above is a test.** They belong at rung 2 (real DB, real predicate), not rung 1 — a mocked `db` will happily report whatever the mock was told to report.
+
+**Two things this table exposes, found by writing it out:**
+
+**A paused chunk and a deleted one are the same row.** Both leave `active = false` with `review_status` untouched. The only difference is that `pause()` writes `updated_by` and `remove()` does not — which is accidental rather than designed, and would survive nobody noticing if it flipped. So *"did the customer switch this off, or did we?"* cannot be answered from the chunk; it is answerable only from the report that `pause` opens beside it. That is thin, and the reports workbench currently labels **any** inactive chunk "pausada", including one platform deleted. Either the state carries the distinction or the UI stops claiming it does — §13 q8.
+
+**Nothing exits the paused-and-resolved state.** A superadmin can resolve the report and leave the answer paused. It is then off permanently: filtered out of the customer's list (which is `active: true`), gone from the platform's open-reports queue, and forgotten by both sides. Reactivation exists as a button and is obliged by nothing. Test that the state is reachable, then decide whether resolving should refuse while the chunk is paused, or simply surface it — §13 q9.
 
 ## 7. What to test, by area
 
@@ -104,7 +111,7 @@ Roles: `superadmin`, tenant `admin`, `vendedor`, and **unauthenticated**.
 Must be asserted, at minimum:
 
 - `POST /api/faq/:id/approve` and `/reject` — `403` for `admin` and `vendedor`, `200` for `superadmin`.
-- `PATCH /api/faq/:id`, `DELETE /api/faq/:id` — see §13 q3 for `DELETE`.
+- `PATCH /api/faq/:id` — `403` for `admin` and `vendedor`, `200` for `superadmin`. Editing an approved answer rewrites and re-embeds it while leaving it live, which is publication by another name.
 - `POST /api/faq` as `admin` → `201`, and the created row is `PENDING_REVIEW` **even when the body asks for `APPROVED`**.
 - `POST /api/faq/:id/report` — `200` for `vendedor`. This one is deliberately open; a test protects it from being "tidied up" into an admin-only route later.
 - **The pause asymmetry**, which is the whole design and the easiest thing to lose: `POST /api/faq/:id/pause` is `200` for a tenant `admin` and only ever writes `active = false`; `PATCH` with `{active: true}` is `403` for that same admin. A customer can stop an answer and cannot start one. If a future refactor generalises pause into a toggle, that test is what catches it.
@@ -121,9 +128,10 @@ Each tenant has its own database. A leak here is the failure that ends the produ
 - Tenant A's approved chunks are **never** returned for a request resolved to tenant B — via subdomain and via `X-Tenant-Slug`.
 - A superadmin acting on `/tenants/a/faq` writes to A's database and not to master. (`faqDb(slug)` exists precisely because calling ingestion from the panel without it wrote to master — that near-miss deserves a permanent test.)
 - `TenantPrismaFactory` returns the right client under concurrent requests for different tenants.
-- **The Redis embedding cache is shared and its key contains neither tenant nor model:** `faq:emb:<sha256(trim+lowercase(message))>`, TTL 7 days. Sharing across tenants is *correct and desirable* — the model is global (`OPENROUTER_EMBEDDING_MODEL`), so the vector is the same and the cache saves real money. Two tests keep it that way:
+- **The Redis embedding cache is shared across tenants by design.** The key is `faq:emb:<sha256(model + "\n" + trim+lowercase(message))>`, TTL 7 days. It carries the model but deliberately **not** the tenant: the model is global (`OPENROUTER_EMBEDDING_MODEL` — only the API key is per-tenant), so the vector is identical between tenants and sharing it saves real money. What is never shared is the *result set*, which the per-tenant query decides. Three tests keep it that way:
   1. The same question from two tenants hits the cache and still retrieves each tenant's own chunks. (Cache hit must not imply shared *results*.)
-  2. **Changing `OPENROUTER_EMBEDDING_MODEL` while vectors are cached** — fixed by putting the model in the key (§13 q4), and covered by a mutation-verified unit test. What is *not* covered is the same hazard for **chunk** embeddings: a model swap leaves every stored `FaqChunk.embedding` in the old vector space with no re-index and no warning. The dimension check only fires if the new model's width differs. A same-width swap silently degrades every tenant at once, and nothing in the system currently notices. Rung 2 test: embed chunks with model A, query with model B, assert the failure is *loud*.
+  2. **The cache holds vectors, not results — so a pause takes effect on the very next message.** There is no window in which a switched-off answer keeps being served from cache. The customer-facing copy promises the bot stops using it *immediately*, and that promise rests entirely on this property; if anyone ever caches result sets, the promise silently becomes false. Test: approve a chunk, retrieve it, pause it, retrieve the same question again (cache hit) and assert it is gone.
+  3. **Changing `OPENROUTER_EMBEDDING_MODEL` while vectors are cached** — fixed by putting the model in the key (§13 q4), and covered by a mutation-verified unit test. What is *not* fixed is the same hazard for **chunk** embeddings: a model swap leaves every stored `FaqChunk.embedding` in the old vector space with no re-index and no warning. The dimension check only fires if the new model's width differs. A same-width swap silently degrades every tenant at once, and nothing in the system notices. Rung 2 test: embed chunks with model A, query with model B, assert the failure is *loud*. This is the larger half of the hazard and it is still open — §13 q7.
 
 ### 7.3 Retrieval mechanics (rung 2, plus rung 4 for the threshold)
 
@@ -192,6 +200,7 @@ A test that has never failed is a claim, not evidence. Before any test written u
 - **Mutation survival rate** on the §6 invariant tests. Target: zero survivors.
 - **Retrieval precision on the golden set** — fired-and-correct vs fired-and-wrong. Tracked across threshold changes; it is the only number that makes tuning defensible.
 - **Prefilter hit rate** against real traffic, versus PRD 1's 30–40% estimate.
+- **Answers paused by customers, and time-to-reactivation.** The sharpest content-quality signal available: it counts how often something *we approved* turned out to be wrong in front of real customers. A rising count means the approval gate is passing bad content; a long tail on reactivation means §6's dangling state is real and people are living in it.
 - **Embedding cache hit rate** and `embed_ms` p95 against the 800ms timeout. If p95 approaches the timeout, the fail-open path is firing routinely and users are silently getting a bot with no knowledge.
 
 ## 11. Acceptance gate
@@ -201,13 +210,15 @@ Before `faq_rag_enabled` is turned on for a paying tenant, all of the following 
 1. `npm test` exits 0 (§5).
 2. Every row of §6's transition table is green at rung 2.
 3. The §7.1 authorization matrix is green at rung 3, including `/tenants/**` for non-superadmins.
-4. §7.2 cross-tenant isolation is green, and the model-swap cache hazard is either fixed or documented in the runbook.
+4. §7.2 cross-tenant isolation is green.
 5. `faq_rag_enabled = false` is proven to make **zero** embedding calls.
 6. The prompt-injection chunk does not alter bot behaviour.
-7. The golden set exists and precision is recorded — a baseline, not a threshold to pass.
-8. Mutation survivors on invariant tests: zero.
+7. **The pause asymmetry holds:** a tenant `admin` can switch an answer off and cannot switch one on. This is the customer's only lever over live content and the only thing standing between "they can stop a false statement" and "they can publish".
+8. A model swap cannot silently degrade retrieval — the chunk-embedding half of §7.2 is fixed, or a re-index is a documented, enforced step.
+9. The golden set exists and precision is recorded — a baseline, not a threshold to pass.
+10. Mutation survivors on invariant tests: zero.
 
-Items 1–6 are pass/fail. Item 7 is a measurement whose value is agreed with the business, because "good enough retrieval" is a business judgement.
+Items 1–8 and 10 are pass/fail. Item 9 is a measurement whose value is agreed with the business, because "good enough retrieval" is a business judgement.
 
 ## 12. Phasing
 
@@ -228,14 +239,16 @@ Items 1–6 are pass/fail. Item 7 is a measurement whose value is agreed with th
 1. **Who writes the golden set?** It requires reading real customer conversations and deciding what the right answer was. That is the business's knowledge, not engineering's — the same asymmetry §4.2 of PRD 4 identified for approval. Probably the same person who now approves content.
 2. **Does rung 4 run in CI, or on demand?** Live embeddings cost money per run and make CI dependent on OpenRouter. Recommendation: rungs 0–3 in CI on every push, rung 4 on demand and before a release. Recorded fixtures are the alternative, and they rot silently.
 3. ~~**Should `DELETE` stay open to tenant `admin`?**~~ **Decided, and it turned into a feature rather than a permission.** `DELETE` is now superadmin-only, and the customer got `POST /api/faq/:id/pause` instead: it can only ever deactivate, it opens a report so platform is told, and only a superadmin can switch the answer back on. The reasoning was that flagging does not take an answer down, so without a brake our response time *is* how long a false statement keeps reaching the customer's customers. §7.1's matrix now expects `403` on `DELETE` and `200` on `pause` for a tenant `admin`, plus the asymmetry test below.
-4. ~~**Model-swap cache hazard (§7.2)**~~ **Fixed:** the cache key is now `sha256(model + "
-" + normalized_message)`. Changing `OPENROUTER_EMBEDDING_MODEL` produces different keys, so stale vectors are simply never read — no runbook step to forget. It still carries no tenant, deliberately: the model is global, the vector is identical across tenants, and what is *not* shared is the result set, which the per-tenant query decides.
+4. ~~**Model-swap cache hazard for query vectors (§7.2)**~~ **Fixed:** the model name is now part of the cache key, so changing `OPENROUTER_EMBEDDING_MODEL` produces different keys and stale vectors are simply never read — no runbook step to forget. The key still carries no tenant, deliberately: the model is global, the vector is identical across tenants, and what is *not* shared is the result set, which the per-tenant query decides. **The chunk-embedding half of the same hazard is still open** — see §7.2 and §13 q7.
 5. **Where does the throwaway Postgres come from?** `docker-compose.yml` already exists in the backend repo and needs a pgvector image; Testcontainers is tidier, gives per-run isolation, and is a new dependency (currently absent). **Non-negotiable either way: tests never touch an existing database, and every database created is dropped afterwards.**
 6. **Is 0.78 one number or one per vertical?** It is already a per-deploy env var. If the golden set shows verticals diverging, it becomes per-tenant config — which is a schema change, and better known before customers are onboarded than after.
+7. **Chunk embeddings after a model swap (§7.2).** The query half is fixed; this half is not. Options: refuse to boot when the configured model differs from the one the stored embeddings were made with (needs recording it), re-index on change, or make it a documented manual step. The first is the only one that cannot be forgotten, and it needs a column to compare against. **Nothing here is urgent until someone actually changes the model — which is exactly why it will be forgotten.**
+8. **Should a paused chunk be distinguishable from a deleted one (§6)?** Today both are `active = false` with `review_status` untouched, and the reports workbench labels either one "pausada". Either add a column, or infer it from the report that `pause` opens and stop claiming it in the UI otherwise. Cheap now; a data-migration once real customers have paused things.
+9. **Should resolving a report be blocked while its chunk is paused (§6)?** The dangling state — resolved, paused, invisible to everyone — is currently reachable and silent. Refusing the resolve is the self-enforcing fix; surfacing "N paused answers with no open report" is the softer one that does not fight the operator.
 
 ## 14. Risks
 
-- **The suite becomes a ritual.** The failure mode this project has already lived: 293 green tests that never caught anything. Mutation testing (§9) is the only defence, and it only works if a survivor actually gets deleted rather than explained away.
+- **The suite becomes a ritual.** The failure mode this project has already lived: a suite in the hundreds, green, that never caught anything. Mutation testing (§9) is the only defence, and it only works if a survivor actually gets deleted rather than explained away.
 - **Rung 2 and 3 harnesses get built and then bypassed.** A new endpoint is easier to test with a mocked `db`. If rung 1 is where new tests keep landing, the harnesses were too awkward to use — that is a signal about the harness, not about discipline.
 - **Live-embedding cost surprises.** Rung 4 runs cost money. Bound it: the golden set is ~30 queries, and the embedding cache makes reruns nearly free unless it is cleared between runs.
 - **Fixture drift.** Synthetic chunks encode today's lint rules. When a rule changes, fixtures pass while meaning something different. Each fixture states what it is *for*, so a reviewer can tell when it stopped being for that.
