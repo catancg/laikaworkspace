@@ -5,7 +5,7 @@
 
 ## 1. Why this document exists
 
-Four PRDs have shipped. The RAG path now runs from a customer's spreadsheet, through a lint, a review queue and a superadmin approval gate, into a pgvector query that injects text into a live prompt. **No part of that path has ever been tested end to end.** The unit suite is green on 306 tests (at the time of writing) and has never once, on its own, caught a defect that mattered.
+Four PRDs have shipped. The RAG path now runs from a customer's spreadsheet, through a lint, a review queue and a superadmin approval gate, into a pgvector query that injects text into a live prompt. When this was written, **no part of that path had ever been tested end to end**, and the unit suite — green on 306 tests — had never once, on its own, caught a defect that mattered. Phases A–C have since closed part of that; §4 and §12 record what now exists.
 
 That is not a rhetorical flourish, it is the record. Every defect of consequence in this system was found by *executing* something:
 
@@ -61,16 +61,16 @@ Same mutation, same predicate, two rungs, two answers. That is the whole argumen
 
 **Rule for every test written under this PRD:** state which rung it sits on. A test that needs rung 2 evidence and is written with a mocked `db` is worse than no test, because it reports success about a claim it never examined.
 
-## 5. Preconditions — the suite is not green today
+## 5. Preconditions — the suite was not green
 
-Four suites fail before any of this starts, and they must be characterised (not necessarily fixed) first, because "4 failures" is indistinguishable from "5 failures" to anyone running the suite:
+Four suites failed before any of this could start, and had to be characterised (not necessarily fixed) first, because "4 failures" is indistinguishable from "5 failures" to anyone running the suite:
 
 - `src/ai/ai.service.spec.ts`
 - `src/whatsapp/whatsapp.controller.spec.ts`
 - `src/whatsapp/whatsapp.service.spec.ts`
 - `src/crm/crm.controller.spec.ts`
 
-All four are Nest DI wiring, e.g. `Nest can't resolve dependencies of the CrmController (?, WhatsappService)`. `crm.controller.spec.ts` is untouched since the initial commit. **None is related to FAQ or RAG.** They are the reason nobody can tell at a glance whether the suite is passing, which is itself a defect — a suite that is expected to be red teaches people to ignore red.
+All four were Nest DI wiring, e.g. `Nest can't resolve dependencies of the CrmController (?, WhatsappService)`. `crm.controller.spec.ts` had been untouched since the initial commit. **None was related to FAQ or RAG.** They were the reason nobody could tell at a glance whether the suite was passing, which is itself a defect — a suite that is expected to be red teaches people to ignore red.
 
 **Done (phase A).** All four are `describe.skip` with the reason written in the file. Wiring up mocks was rejected on purpose: the only assertion is `toBeDefined()`, which passes for any object, so eight providers would buy ceremony that *also looks like coverage* — the exact failure mode §9 exists to prevent. Skipping leaves a visible "this unit has no real tests" marker where deleting would leave nothing. **`npm test` now exits 0.**
 
