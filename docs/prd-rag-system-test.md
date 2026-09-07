@@ -1,6 +1,6 @@
 # PRD 5 — Full test of the RAG system
 
-**Status:** proposed
+**Status:** phases A–C executed; D–G open (see §12)
 **Depends on:** [PRD 1 — RAG knowledge layer](prd-rag-knowledge-layer.md), [PRD 2 — FAQ content ingestion](prd-faq-content-ingestion.md), [PRD 3 — FAQ admin UI](prd-faq-admin-ui.md), [PRD 4 — bulk import](prd-faq-bulk-import.md)
 
 ## 1. Why this document exists
@@ -48,7 +48,16 @@ Each rung catches a class of defect the rung below is structurally incapable of 
 | 4 | Live OpenRouter + real Redis | threshold calibration, cache behaviour, timeout paths, cost | whether the answer is *true* |
 | 5 | A human reading bot output | truth about the business | nothing — this is the top, and it does not scale |
 
-**Rungs 2 and 3 do not exist today.** `test/` contains the untouched Nest scaffold (`app.e2e-spec.ts`, 29 lines, asserting `GET /` returns Hello World). `test:e2e` points at it. Every passing test in the repo today is rung 0 or 1. That gap is the single largest finding of this document, and §12 phases it.
+**Rungs 2 and 3 now exist** (`test/authorization.e2e-spec.ts`, `test/retrieval-invariant.e2e-spec.ts`); before phase A they did not, and `test/` held only the Nest scaffold asserting `GET /` returns Hello World.
+
+**The ladder is not a metaphor — it was measured.** Deleting `AND review_status = 'APPROVED'` from the retrieval query makes every unapproved chunk reachable by the bot and voids the approval gate outright. Under that exact mutation:
+
+| Rung | Suite | Result |
+|---|---|---|
+| 1 | `faq-retrieval.service.spec.ts` (mocked `db`) | **15/15 green** — notices nothing |
+| 2 | `retrieval-invariant.e2e-spec.ts` (real pgvector) | **4 failures** |
+
+Same mutation, same predicate, two rungs, two answers. That is the whole argument of this document, and it is a result rather than a claim.
 
 **Rule for every test written under this PRD:** state which rung it sits on. A test that needs rung 2 evidence and is written with a mocked `db` is worse than no test, because it reports success about a claim it never examined.
 
@@ -63,7 +72,7 @@ Four suites fail before any of this starts, and they must be characterised (not 
 
 All four are Nest DI wiring, e.g. `Nest can't resolve dependencies of the CrmController (?, WhatsappService)`. `crm.controller.spec.ts` is untouched since the initial commit. **None is related to FAQ or RAG.** They are the reason nobody can tell at a glance whether the suite is passing, which is itself a defect — a suite that is expected to be red teaches people to ignore red.
 
-**Requirement:** either fix the wiring or mark them `describe.skip` with a comment naming the missing provider. `npm test` must exit 0 on a clean checkout before §11 can be evaluated.
+**Done (phase A).** All four are `describe.skip` with the reason written in the file. Wiring up mocks was rejected on purpose: the only assertion is `toBeDefined()`, which passes for any object, so eight providers would buy ceremony that *also looks like coverage* — the exact failure mode §9 exists to prevent. Skipping leaves a visible "this unit has no real tests" marker where deleting would leave nothing. **`npm test` now exits 0.**
 
 ## 6. The load-bearing invariant
 
@@ -224,15 +233,26 @@ Items 1–8 and 10 are pass/fail. Item 9 is a measurement whose value is agreed 
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Fix or skip the 4 failing suites (§5) | Nothing else can be evaluated while red is the expected state |
-| **B** | Rung 3 harness + the §7.1 authorization matrix | Highest consequence, lowest cost — `supertest` is already installed, and this is the rung the `RolesGuard` bug lived on |
-| **C** | Rung 2 harness (throwaway Postgres + pgvector) + the §6 invariant table | The load-bearing invariant, on the only rung that can prove it |
+| **A** ✅ | Fix or skip the 4 failing suites (§5) | Done — `npm test` exits 0 |
+| **B** ✅ | Rung 3 harness + the §7.1 authorization matrix | Done — 63 cases (15 routes × 3 roles + unauthenticated). Mutation-verified: restoring the guard bug fails exactly the 8 `/tenants/**` cases |
+| **C** ◑ | Rung 2 harness (throwaway Postgres + pgvector) + the §6 invariant table | Harness done, 14 tests: every `review_status`, `active`, `embedding IS NULL`, agent targeting, threshold, `topK`. **Still open:** the transitions themselves (approve/reject/pause/withdraw/supersede) — the harness makes them cheap |
 | **D** | §7.2 multi-tenant isolation | Needs both harnesses; highest blast radius of anything here |
 | **E** | §7.3 retrieval mechanics + §7.4 mutation pass on content rules | Cheap once C exists |
 | **F** | §8 golden set + threshold calibration | Needs real content and a business conversation |
 | **G** | §7.5 end-to-end, injection, `test-bot.js` extension | Last: needs everything above to interpret a failure |
 
-**Phase B ships value on day one even if nothing after it is built.** It is a few hundred lines against a dependency already present, and it covers the class of defect this project has actually shipped twice.
+**Phase B shipped value on day one, as predicted.** It cost one file against a dependency already present, and it covers the class of defect this project has shipped twice.
+
+**Running rung 2 locally** (never against an existing database — throwaway container, own port, removed afterwards):
+
+```bash
+docker run -d --rm --name laika-rag-rung2 -e POSTGRES_PASSWORD=throwaway   -e POSTGRES_DB=ragtest -p 55432:5432 pgvector/pgvector:pg16
+DATABASE_URL="postgresql://postgres:throwaway@localhost:55432/ragtest?schema=public"   npx prisma migrate deploy
+RUNG2_DATABASE_URL="postgresql://postgres:throwaway@localhost:55432/ragtest?schema=public"   npm run test:e2e
+docker rm -f laika-rag-rung2
+```
+
+Without `RUNG2_DATABASE_URL` the rung 2 suite skips itself and rung 3 still runs, so a machine without Docker never sees a false red.
 
 ## 13. Open questions
 
