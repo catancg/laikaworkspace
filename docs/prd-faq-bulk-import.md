@@ -75,9 +75,13 @@ The second is unbounded and cannot be delegated. **The lint validates shape — 
 
 **A design consequence that survives all of this:** the two ingest modes do not share one screen, even though the vision naturally merges them. They carry different risks, different warnings and different review paths, and presenting both as "upload a file" makes them look more alike than they are.
 
-### 4.4 The honest limit of this document
+### 4.4 Decided: the client proposes, the platform approves
 
-Letting a tenant admin *approve* — rather than see and flag — needs a tenant-facing review screen, and **no phase in §9 builds one.** PRD 3 gates every review surface to superadmin at the controller. Until that screen exists, "the client can approve their own content" is an aspiration, not a shipped capability, and this document should not imply otherwise. §9 phase G scopes it; §13 question 4 is where the decision belongs.
+**Question 4 has been answered, and the answer is no.** Content that comes from the customer requires superadmin approval before it reaches the RAG. The customer keeps every path to *propose* — manual entry, CSV/XLSX import, templates, document extraction — because all four land in `PENDING_REVIEW`. What they do not get is publication.
+
+This changes §4.3's third bullet: business confirmation is not "approved by the operator, then visible to the business." It is the reverse — proposed by the business, approved by the platform, with the business able to flag a proposal *before* it goes live as well as after. The second question in §4.2 ("is this true about this business?") is still the client's to answer and still cannot be delegated; flagging is how they answer it, at both ends of the queue.
+
+Enforcement is in two places, deliberately. The routes that publish (`approve`, `reject`, `PATCH`) are superadmin-only; and `upsertBatch` refuses to write `APPROVED` for any non-superadmin actor, so the next ingest path added does not reopen the hole by forgetting the first check. Three paths were open when this was implemented and are recorded in §11.
 
 ---
 
@@ -212,14 +216,14 @@ The lint catching it is the safety net. The template explaining it is what stops
 | **D** | Read-only knowledge view for the tenant's `admin` role, with a "this is wrong" reporting channel | Closes the "I cannot see what my bot knows" gap. Independent of the upload work and deliverable on its own |
 | **E** | XLSX template + XLSX parsing + instructions sheet | Turns it into something the client uses without help |
 | **F** | Client-facing upload (tenant `admin`), mode A only | Needs phases B and D working: no preview and no visibility, no client upload |
-| **G** | Tenant-facing review screen — approve/reject for the tenant's own `admin` | **The phase that would make §4.2's second row real.** Deliberately last, and gated on question 4 in §13 |
+| **G** | Tenant-facing screen for what is waiting — visible, flaggable, **not** approvable | Question 4 was decided against tenant approval (§4.4), so this shipped as visibility plus a pre-approval flagging channel rather than a review queue |
 | **H** | Mode B: PDF/DOCX parsing over the existing extraction pipeline | The riskiest and least needed: the good content is usually already written down |
 
 Phase A alone changes today's working day. It is worth shipping before the rest is agreed.
 
 **Phase D is deliberately placed before the client can upload anything.** Letting the business see the knowledge base is worth more than letting it load into one, and it is the prerequisite for the trust that phase F assumes. Its reporting channel is part of the phase, not an extra — §11 lists visibility-without-a-channel as a risk, and a phase that delivers the first without the second creates that risk rather than avoiding it.
 
-**Phases A through F deliver bulk loading; none of them delivers client approval.** Until phase G, a client-uploaded batch lands in a queue only a superadmin can clear. That is still a useful feature — the client stops waiting on us to type — but it is a smaller one than §4.2's table suggests, and the gap should be visible in the plan rather than discovered during phase F.
+**No phase delivers client approval, and that is now the design rather than a gap.** A client-uploaded batch lands in a queue only a superadmin can clear. That is still the feature that matters — the client stops waiting on us to type — and the client's judgement enters through flagging rather than through an approve button.
 
 ## 10. Metrics
 
@@ -238,6 +242,10 @@ Phase A alone changes today's working day. It is worth shipping before the rest 
 - **A confirmed import can land partially.** `upsertBatch` is not transactional (§6.3). The preview makes this sharper, not softer: it promises a known outcome and a mid-write failure breaks that promise. Batch withdraw (§6.5) is the floor, not a nicety.
 - **XLSX adds a dependency.** The first in this PRD. Pick a maintained library and scope what is parsed — one sheet, four columns — rather than supporting Excel.
 
+- **Approval authority was enforced in the UI, not the API.** Found while implementing §4.4. Three paths let a tenant `admin` put content in front of the bot with no review: `POST /api/faq` defaulted to `APPROVED` when the body omitted `reviewStatus`; `PATCH /api/faq/:id` rewrote and re-embedded an already-approved answer while leaving it approved — the quietest of the three, because it edits something a reviewer had already blessed; and `approve`/`reject` were open to `admin`. All three are closed, with a second check at the write itself so a new ingest path cannot reopen them by omission.
+
+- **`RolesGuard` ignored class-level `@Roles` entirely.** Also found here, and wider than this PRD: the guard read only `ctx.getHandler()`, so `TenantsController`'s class-level `@Roles('superadmin')` — every tenant CRUD route plus per-slug FAQ approval — enforced nothing against any authenticated user. `AgentsController` and `MetricsController` had the same shape. Fixed and covered by a spec. **The lesson generalises past this file: a decorator that is never asserted on is not a control.**
+
 ## 12. Already built — do not rebuild
 
 Worth listing, because it is most of the work:
@@ -255,6 +263,6 @@ Worth listing, because it is most of the work:
 1. **XLSX or Google Sheet?** XLSX is new code and a dependency; the Sheet is no code and more steps for the client. A product decision about who absorbs the friction.
 2. **Does the 500-row cap still make sense** once loading is genuinely bulk? The number was chosen for review fatigue, not for a technical limit.
 3. **Should the business be able to edit, not just see?** §5 proposes read-only first. Editing brings back the question §4 answers for uploads — and for an edit there is no template and no author to point at, so it is a harder case, not an easier one.
-4. **Can the client approve what they loaded themselves by template?** §4 proposes yes. It is the most consequential question in this document and should be decided with the business, not here.
+4. ~~**Can the client approve what they loaded themselves by template?**~~ **Decided: no.** Customer-originated content is approved by the superadmin. See §4.4 for the shape and §9 phase G for what that made of the tenant review screen.
 5. **What happens to a rejected row?** Today it simply does not go in. Is it worth offering an in-screen fix and retry, or is it corrected in the file and re-uploaded? The latter is simpler and keeps the file as the source of truth.
 6. **Should the template carry aliases?** The Ideas Todo Terreno document has 165 and there is currently nowhere to put them ([plan-ingesta-rag-itt.md](plan-ingesta-rag-itt.md) §2). If measurement says they are needed, the template is the natural place to ask for them — but first we need to know whether they help.
