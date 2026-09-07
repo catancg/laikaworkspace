@@ -81,7 +81,9 @@ So the invariant is not tested once. It is tested **after every transition that 
 | `approve` | Yes |
 | `approve` where a **previous version was live** | New yes, **previous no** (`supersedePrevious`, atomic) |
 | `reject` | No — `ARCHIVED` + `active = false` |
-| `DELETE /api/faq/:id` (soft) | No — `active = false`, `review_status` untouched |
+| `DELETE /api/faq/:id` (soft, superadmin only) | No — `active = false`, `review_status` untouched |
+| `POST /api/faq/:id/pause` by a tenant `admin` | **No** — `active = false`; and a report is opened so platform is told |
+| Superadmin `PATCH {active: true}` on a paused chunk | Yes again — the only way back on |
 | `withdrawBatch` | No — `active = false` **and** `ARCHIVED` |
 | `updateOne` on an approved chunk | **Yes, with new text** — this is why `PATCH` is now superadmin-only |
 | Re-ingest of an existing `(source_ref, source_ordinal)` whose live version is `APPROVED` | Old stays yes, new enters as `PENDING_REVIEW` |
@@ -105,6 +107,8 @@ Must be asserted, at minimum:
 - `PATCH /api/faq/:id`, `DELETE /api/faq/:id` — see §13 q3 for `DELETE`.
 - `POST /api/faq` as `admin` → `201`, and the created row is `PENDING_REVIEW` **even when the body asks for `APPROVED`**.
 - `POST /api/faq/:id/report` — `200` for `vendedor`. This one is deliberately open; a test protects it from being "tidied up" into an admin-only route later.
+- **The pause asymmetry**, which is the whole design and the easiest thing to lose: `POST /api/faq/:id/pause` is `200` for a tenant `admin` and only ever writes `active = false`; `PATCH` with `{active: true}` is `403` for that same admin. A customer can stop an answer and cannot start one. If a future refactor generalises pause into a toggle, that test is what catches it.
+- `DELETE /api/faq/:id` — `403` for `admin` and `vendedor`.
 - **Every route under `/tenants/**`** — `403` for `admin` and `vendedor`. This is the surface that was open. It is not FAQ-specific and it is tested here because this is the document that noticed.
 - `PATCH /tenants/:slug`, `updateChannel`, `updateTemplate` — the allowlists hold: `database_url`, `slug`, `active`, `tenant_id` are silently dropped, not written. There is no global `ValidationPipe`; the allowlist is the only thing standing there.
 
@@ -119,7 +123,7 @@ Each tenant has its own database. A leak here is the failure that ends the produ
 - `TenantPrismaFactory` returns the right client under concurrent requests for different tenants.
 - **The Redis embedding cache is shared and its key contains neither tenant nor model:** `faq:emb:<sha256(trim+lowercase(message))>`, TTL 7 days. Sharing across tenants is *correct and desirable* — the model is global (`OPENROUTER_EMBEDDING_MODEL`), so the vector is the same and the cache saves real money. Two tests keep it that way:
   1. The same question from two tenants hits the cache and still retrieves each tenant's own chunks. (Cache hit must not imply shared *results*.)
-  2. **Changing `OPENROUTER_EMBEDDING_MODEL` while vectors are cached.** Query vectors from the old model survive for up to 7 days and get compared against chunk embeddings from the new one. `FaqEmbeddingClient` validates dimensions on *ingestion*, so a same-dimension model swap produces silently garbage scores with nothing raising an error. Either the key gains a model component or the swap procedure documents a cache flush — §13 q4.
+  2. **Changing `OPENROUTER_EMBEDDING_MODEL` while vectors are cached** — fixed by putting the model in the key (§13 q4), and covered by a mutation-verified unit test. What is *not* covered is the same hazard for **chunk** embeddings: a model swap leaves every stored `FaqChunk.embedding` in the old vector space with no re-index and no warning. The dimension check only fires if the new model's width differs. A same-width swap silently degrades every tenant at once, and nothing in the system currently notices. Rung 2 test: embed chunks with model A, query with model B, assert the failure is *loud*.
 
 ### 7.3 Retrieval mechanics (rung 2, plus rung 4 for the threshold)
 
@@ -223,8 +227,9 @@ Items 1–6 are pass/fail. Item 7 is a measurement whose value is agreed with th
 
 1. **Who writes the golden set?** It requires reading real customer conversations and deciding what the right answer was. That is the business's knowledge, not engineering's — the same asymmetry §4.2 of PRD 4 identified for approval. Probably the same person who now approves content.
 2. **Does rung 4 run in CI, or on demand?** Live embeddings cost money per run and make CI dependent on OpenRouter. Recommendation: rungs 0–3 in CI on every push, rung 4 on demand and before a release. Recorded fixtures are the alternative, and they rot silently.
-3. **Should `DELETE /api/faq/:id` stay open to tenant `admin`?** Flagged when the approval gate went in and still undecided. It removes content rather than inserting it, so it cannot bypass the gate, but it lets a customer unilaterally pull superadmin-approved content. The test matrix in §7.1 needs an expected value, so this must be answered before phase B.
-4. **Model-swap cache hazard (§7.2):** add the model to the cache key, or make a cache flush a mandatory step in the model-change runbook? The key is cheaper and self-enforcing; the runbook is free until someone forgets.
+3. ~~**Should `DELETE` stay open to tenant `admin`?**~~ **Decided, and it turned into a feature rather than a permission.** `DELETE` is now superadmin-only, and the customer got `POST /api/faq/:id/pause` instead: it can only ever deactivate, it opens a report so platform is told, and only a superadmin can switch the answer back on. The reasoning was that flagging does not take an answer down, so without a brake our response time *is* how long a false statement keeps reaching the customer's customers. §7.1's matrix now expects `403` on `DELETE` and `200` on `pause` for a tenant `admin`, plus the asymmetry test below.
+4. ~~**Model-swap cache hazard (§7.2)**~~ **Fixed:** the cache key is now `sha256(model + "
+" + normalized_message)`. Changing `OPENROUTER_EMBEDDING_MODEL` produces different keys, so stale vectors are simply never read — no runbook step to forget. It still carries no tenant, deliberately: the model is global, the vector is identical across tenants, and what is *not* shared is the result set, which the per-tenant query decides.
 5. **Where does the throwaway Postgres come from?** `docker-compose.yml` already exists in the backend repo and needs a pgvector image; Testcontainers is tidier, gives per-run isolation, and is a new dependency (currently absent). **Non-negotiable either way: tests never touch an existing database, and every database created is dropped afterwards.**
 6. **Is 0.78 one number or one per vertical?** It is already a per-deploy env var. If the golden set shows verticals diverging, it becomes per-tenant config — which is a schema change, and better known before customers are onboarded than after.
 
