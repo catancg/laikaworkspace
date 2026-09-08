@@ -44,26 +44,56 @@ Two consequences that run through the whole document:
 
 ## 4. What gets measured, and by what
 
-The most important design decision: **most of what "does the agent follow its prompt?" means is not a judgment call.** Routing it through an LLM makes it slower, costlier and less reliable than a regular expression.
+The dividing line is **not** "mechanical versus subjective". It is:
 
-### 4.1 Deterministic checks — the backbone
+> **Is the rule itself a constant in our code, or is it data the tenant can change?**
 
-Assertions over the reply text and the turn's metadata. No judge, no cost, no variance:
+A rule that lives in a tenant's prompt can be perfectly mechanical to verify and still be impossible to hardcode, because it is different for the next customer and different again after the next edit. Getting this backwards produces checks that are silently wrong for every tenant but the one they were written against.
 
-| Check | Why it is deterministic |
+### 4.1 Tier 1 — platform invariants, checked deterministically
+
+True for every tenant regardless of what their prompts say, because the rule lives in **our** code (`AiService.GUARDRAILS`, `AiService.CONVERSACION`) or is a system contract:
+
+| Check | Where the rule lives |
 |---|---|
-| Invented a price or discount | `faq-lint.ts` already implements this, tuned for Argentine price formats |
-| ~~WhatsApp formatting~~ | **Not measurable as specified** — see §4.2 |
-| Leaked internal routing | Must never name an agent, `[[DERIVAR]]`, or the retrieved-knowledge markers |
-| Said "diseñador de interiores" instead of "asesor" | A named rule from the briefing |
-| Greeted twice | Second turn onward must not re-greet |
-| Escalation actually escalated | `handToHuman` is returned by `chat()` |
-| Retrieval fired when it should | `RetrievalOutcome.fired` + `chunkIds` (needs §10) |
-| Answer grounded in its chunk | `faq-support.ts` already computes exactly this |
+| Leaked internal routing — `[[DERIVAR]]`, agent names, the retrieved-knowledge markers | `GUARDRAILS`, a platform constant |
+| Invented a price or discount | `faq-lint.ts`, and a stated product rule |
+| Answer grounded in the chunk it retrieved | `faq-support.ts` computes exactly this |
+| Retrieval fired when it should | `RetrievalOutcome.fired` + `chunkIds` (§10) |
+| The escalation flag matches what the reply says | `handToHuman` returned by `chat()` |
+| ~~WhatsApp formatting~~ | **Not measurable as specified** — see §4.3 |
 
-**These are also the only metric in this document that is trustworthy across months.** A pass rate is absolute, stable, and unaffected by which model is judging — which is precisely what §7 shows the judge scores are not. If only half of this PRD gets built, build this half.
+**These are the only metric in this document that is trustworthy across months.** A pass rate is absolute, stable, and unaffected by which model is judging — which is precisely what §7 shows the judge scores are not.
 
-### 4.2 The formatting check that cannot be done
+### 4.2 Tier 2 — the tenant's own instructions, judged against the real prompt
+
+Everything else the agent is told is **data**, not code. ITT's `ventas` prompt is 7,497 characters and 28 instructions; 27% of them are absolute `NUNCA`/`SIEMPRE` constraints:
+
+> *"NUNCA muestres el stock ni el SKU"* · *"máximo 3, todas de la MISMA linea"* · *"NUNCA des por elegido un producto que el cliente no vio"* · *"Ofrece opciones SOLO si el cliente las pide"*
+
+Those are mechanically verifiable in principle and **impossible to hardcode**: they are one tenant's rules, they change whenever someone edits the prompt, and the next customer's set will be different. A check that hardcodes them is stale from the first edit.
+
+**So the judge is given the agent's actual instructions and asked whether the reply complied with them.** That is the general instrument: it works for any tenant, adapts automatically when a prompt changes, and needs nobody to write a rule per instruction.
+
+This also corrects an example in an earlier draft of this document. *"Says 'asesor', never 'diseñador de interiores'"* was listed as a deterministic check. It is not — it is a rule in **ITT's** prompt. Hardcoding it would silently pass for every other tenant, and silently fail if ITT ever changed its mind.
+
+#### 4.2.1 Which prompt, exactly
+
+Not `Agent.prompt`. What the model actually receives is assembled from six parts:
+
+```js
+stablePrompt = [GUARDRAILS, CONVERSACION, rulesBlock, businessBlock, imagesBlock, withStages]
+```
+
+plus the dynamic block (contact details, retrieved knowledge) and the conversation history. `Agent.prompt` — inside `withStages` — is one of six. **The judge must see the assembled system prompt for that turn**, or it grades against a fraction of the rulebook and will confidently flag compliant replies as violations.
+
+That is a third instrumentation need alongside §10. `scripts/dump-prompts.js` already extracts prompts, business info and rules from a tenant database, so the sources are reachable; what is missing is the assembled string as sent.
+
+#### 4.2.2 A possible optimisation, not for v1
+
+The judge could, once per corpus setup, extract the absolute constraints from a prompt into an explicit checklist that a human reviews — turning tenant rules into cheap deterministic checks, regenerated whenever the prompt changes. Best of both, and too clever to build before the straightforward version works.
+
+### 4.3 The formatting check that cannot be done
 
 `normalizeWhatsappText` is private in `AiService` **and runs on the reply before it is returned**: it converts `**markdown**` to `*bold*`, strips `[text](url)`, fixes bullets. By the time the runner sees `reply`, the violation has already been repaired.
 
@@ -73,9 +103,9 @@ What *is* measurable, and is better signal: **how often the normalizer had to in
 
 Until that exists, this check is out. A check that cannot fail is worse than no check.
 
-### 4.3 Judged scores — for what needs reading
+### 4.4 Judged scores — quality, beyond compliance
 
-What survives §4.1 requires judgment: did it understand the customer, was the answer useful, did it advance the sale, was escalating right. Those get an LLM score (§6).
+Beyond compliance with the instructions (§4.2) there is quality: did it understand the customer, was the answer useful, did it advance the sale, was escalating the right call. Same judge, separate criteria — a reply can follow every rule and still be a bad answer.
 
 ## 5. Running it
 
@@ -190,6 +220,11 @@ One change, and every RAG measurement depends on it.
 
 **Without surfacing it, "did the RAG behave correctly?" is only answerable by scraping logs.** Add it to the return as an optional field.
 
+Two more returns are needed for the same reason — each is one field, and each unblocks a check that is otherwise impossible:
+
+- **The assembled system prompt** (§4.2.1). Without it the judge grades against a fraction of the rulebook.
+- **The raw model output**, before `normalizeWhatsappText` (§4.3). Without it the formatting check cannot fail.
+
 ## 11. Metrics
 
 - **Deterministic pass rate per check.** The trustworthy trend line (§4.1).
@@ -202,14 +237,16 @@ One change, and every RAG measurement depends on it.
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Fixtures: move the 28 scenarios out of `test-bot.js`, add deterministic expectations and their data dependencies | The corpus exists; this makes it addressable. No new infrastructure |
-| **B** | Engine + deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost, and measures its own variance for free (§13 q3) |
-| **C** | Judge: rubric, scores, version stamping (§7), the labelled agreement set (§6.4) | The interpretation layer. Built on B rather than instead of it — the deterministic pass rate is what tells you whether the judge is worth believing |
-| **D** | `source: 'eval'` tagging and CRM filtering | Must land **before** the panel: the panel runs against production, and without this it fills the customer's CRM with fake leads |
-| **E** | Panel: run, quick-check mode, results, run history | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
-| **F** | `RetrievalOutcome` surfaced from `chat()` (§10), and raw model output for §4.2 | Two small returns that unblock the RAG and formatting measurements |
+| **A** | Fixtures: move the 28 scenarios out of `test-bot.js`, add tier-1 expectations and their data dependencies | The corpus exists; this makes it addressable. No new infrastructure |
+| **B** | Engine + tier-1 deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost, and measures its own variance for free (§13 q3) |
+| **C** | Three returns from `chat()`: assembled system prompt, `RetrievalOutcome`, raw model output (§10) | **Prerequisite for the judge**, not a follow-up. Without the assembled prompt there is no compliance judging (§4.2.1) — only vague quality scoring |
+| **D** | Judge: compliance against the real prompt, quality criteria, version stamping (§7), the labelled agreement set (§6.4) | The interpretation layer. Built on B and C rather than instead of them |
+| **E** | `source: 'eval'` tagging and CRM filtering | Must land **before** the panel: the panel runs against production, and without this it fills the customer's CRM with fake leads |
+| **F** | Panel: run, quick-check mode, results, run history | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
 
-**B is useful on its own**, before any judge exists: it already catches an invented price, a broken escalation or a leaked routing marker, at zero cost per run.
+**B is useful on its own**, before any judge exists: it already catches an invented price, a broken escalation or a leaked routing marker, at zero cost per run — those are the tier-1 invariants, and they need no prompt to verify.
+
+**C is small and non-negotiable.** Three optional fields on an existing return value. An earlier draft had it *after* the judge, which would have meant building compliance judging with no rulebook to judge against.
 
 **E is where the feature becomes real for the business.** An earlier draft put the panel last; that was wrong, because it would leave the people who make these changes waiting behind six phases of tooling built for someone else.
 
