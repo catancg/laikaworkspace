@@ -23,9 +23,19 @@ Two uses, in priority order:
 
 Automated A/B judging is explicitly out (§3). That decision shapes §6.
 
+### 2.1 Who this is for
+
+**The primary user is a non-technical superadmin**, not an engineer. The people who edit agent prompts and load knowledge-base content do it from the panel; they have no local environment and never will. A suite that only runs from a terminal would be built for the wrong audience — it would serve the people who *don't* make these changes.
+
+Two consequences that run through the whole document:
+
+- **The panel is the primary interface**, not a later convenience. The CLI is the engineering path, and it exists because engineers also change these things — but it is the secondary one.
+- **The output has to be legible to someone who is not reading JSON.** "El bot inventó un precio en 2 conversaciones" is actionable. "La media de utilidad bajó 0.2" is not. This is a second, independent reason the deterministic checks (§4.1) matter more than the judged scores: they are both the more trustworthy signal *and* the more readable one.
+
 ## 3. Non-goals
 
 - **No separate eval tenant.** Runs happen against whatever tenant is named — production or local.
+- **Not a CLI-only tool.** The people who edit prompts work in the panel and have no local environment (§2.1).
 - **No automated A/B verdict.** No "variant B wins". Two runs, read by a person.
 - **No promotion pipeline.** Nothing moves configuration between tenants.
 - **Not a correctness oracle.** The judge is another LLM with its own error (§6, §7).
@@ -59,11 +69,36 @@ What survives §4.1 requires judgment: did it understand the customer, was the a
 
 ## 5. Running it
 
-### 5.1 Local and production, same command
+### 5.1 One engine, two front doors
 
-One runner, pointed at a tenant by slug. Locally it hits the dev tenant; in production it runs from the Railway console against the live one. Same code, same scenarios, same storage shape — otherwise the two aren't comparable, which defeats the purpose.
+The same engine, pointed at a tenant by slug, reachable two ways:
 
-### 5.2 Running against production creates conversations
+- **From the panel** — a superadmin picks scenarios and presses run. This is the path that matters (§2.1), and it is the one the business actually uses.
+- **From the command line** — engineers, locally or from the Railway console.
+
+Same code, same scenarios, same storage shape. If the two diverge, runs stop being comparable and the historical record is worthless.
+
+### 5.2 Prompt history, and the undo that makes evaluation safe
+
+`Agent` has a single `prompt` column. `AgentsService.update()` overwrites it in place: **no draft, no version history, no previous value.** A superadmin edits the `ventas` prompt, it is live on the next customer message, and the text that was there before is gone.
+
+That is a problem on its own, and it is a prerequisite here: an evaluation that says "this got worse" is not much use if there is nothing to go back to.
+
+**Requirement: every save archives the previous version.** A row per revision — agent, prompt text, who saved it, when, and the id of the eval run that was active at the time if there is one. The panel gets "volver a la versión anterior", which restores the text and invalidates the agent cache (`invalidateAgentCache` already exists for this).
+
+This is small, independent of everything else in this document, and worth building first (§12 phase A). It is also the only part of this PRD that reduces risk *before* any measurement exists.
+
+### 5.3 The change is live while it is being evaluated
+
+The chosen workflow is: **save → evaluate → keep or revert.** The prompt is in production for the duration of the run, so real customers can receive the version being tested.
+
+This is a deliberate trade, taken to avoid threading prompt overrides through `AiService`'s prompt assembly — the hottest path in the product. It is stated here rather than buried because it is a real cost:
+
+- **Bound the exposure.** A "quick check" mode — deterministic checks only, a subset of scenarios, no judge — runs in a fraction of the time and catches the categorical failures (invented price, broken escalation, leaked routing). Offer that as the default after a prompt edit, with the full judged run as a deliberate second step.
+- **Make reverting one click**, per §5.2. Recovery time matters more than prevention here, because prevention was the thing we chose not to pay for.
+- If this trade ever proves wrong — a bad prompt reaches enough customers to matter — the answer is the override path, and that is when to pay for it.
+
+### 5.4 Running against production creates conversations
 
 `AiService.chat()` takes a `contactId` and reads history from the database — it cannot be called with a bare message list. That is why `/api/test-chat` persists `Contact` and `Message` rows, deliberately ("deja la conversación en /conversations como un lead real").
 
@@ -170,20 +205,23 @@ One change, and every RAG measurement depends on it.
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Fixtures: move the 28 scenarios out of `test-bot.js`, add deterministic expectations | The corpus exists; this makes it addressable. No new infrastructure |
-| **B** | Runner + deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage, local only | A real trend line, zero judge cost. **Useful alone** |
-| **C** | `source: 'eval'` tagging and CRM filtering; run against production | What makes it a production instrument |
-| **D** | `RetrievalOutcome` surfaced from `chat()` (§10) | Unblocks RAG-behaviour measurement |
-| **E** | Judge: rubric, scores, versioning, the labelled agreement set | The soft signal, built only once the solid one works |
-| **F** | A view of run history in the panel | Reading two runs side by side is the manual comparison in §2 |
+| **A** | Prompt history + "volver a la versión anterior" in the panel (§5.2) | Independent of everything else, and the only phase that reduces risk before any measurement exists. Today a bad prompt edit is unrecoverable |
+| **B** | Fixtures: move the 28 scenarios out of `test-bot.js`, add deterministic expectations | The corpus exists; this makes it addressable. No new infrastructure |
+| **C** | Engine + deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost |
+| **D** | `source: 'eval'` tagging and CRM filtering | Must land **before** the panel: the panel runs against production, and without this it fills the customer's CRM with fake leads |
+| **E** | Panel: run, quick-check mode, results, run history, revert | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
+| **F** | `RetrievalOutcome` surfaced from `chat()` (§10) | Unblocks RAG-behaviour measurement |
+| **G** | Judge: rubric, scores, versioning, the labelled agreement set | The soft signal, built only once the solid one works |
 
-**Phase B alone would already catch an invented price or a broken escalation before a customer sees it**, and produces a number worth plotting.
+**A is worth doing this week regardless of the rest.** It is a table and a button, and it turns "we overwrote the prompt and can't get it back" from a live risk into a non-event.
+
+**E is where the feature becomes real for the business.** An earlier draft of this plan put the panel last; that was wrong, because it would have left the people who make these changes waiting for six phases of tooling built for someone else.
 
 ## 13. Open questions
 
-1. **How often does production run?** Nightly gives a dense trend and a nightly bill; weekly is cheaper and slower to notice a regression. Needs the cost number from phase B first.
+1. **How often does production run?** Nightly gives a dense trend and a nightly bill; weekly is cheaper and slower to notice a regression. Needs the cost number from phase C first.
 2. **Cost per run, and whose budget.** ~28 scenarios × ~4 turns × N repetitions × (orchestrator + agent) calls, plus one judge call per turn. Hundreds of model calls. Judging should be platform cost; the conversation itself runs on the tenant's key by construction.
-3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase B can do for free by running the same scenario repeatedly and looking at the spread of deterministic results.
+3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase C can do for free by running the same scenario repeatedly and looking at the spread of deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
 5. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
 
@@ -193,4 +231,5 @@ One change, and every RAG measurement depends on it.
 - **A judge change silently invalidates history.** The specific, likely failure. §7.1 is the whole answer, and it only works because §8 stores transcripts.
 - **Optimising for the judge** rather than for customers. The deterministic checks and real transcripts are the counterweight.
 - **Eval contacts leak into business metrics.** One missed call site and the customer's lead count is wrong. The filter needs a test, not just a code review.
-- **Cost surprises.** Bounded by phase B being free and by estimating before every judged run.
+- **A bad prompt reaches customers while it is being evaluated** (§5.3). The accepted cost of not building the override path. Mitigated by the quick-check mode and one-click revert, not eliminated — if it bites, the answer is the override path.
+- **Cost surprises.** Bounded by phase C being free and by estimating before every judged run.
