@@ -76,9 +76,91 @@ asking for help revising bot prompt text rather than backend/frontend code — s
 [soylaika.backend/doc/agentes-e-info-del-negocio.md](soylaika.backend/doc/agentes-e-info-del-negocio.md)
 for the code-level counterpart.
 
+## Working safely in this workspace
+
+Things that have actually gone wrong here, or that would go wrong for a session assuming the
+usual conventions. Read before the first write.
+
+### Git
+
+- **Stage explicit paths. Never `git add -A`, `git add .`, or `git stash`.** Both code repos
+  carry uncommitted local edits to their own `CLAUDE.md` that are not yours to move — a blanket
+  stage or a stash sweeps them up and they are not recoverable from the remote.
+- **Check which branch you are on before starting.** The code repos are not always left on
+  `main`; a feature branch from earlier work is often still checked out.
+- **Three repos, three commits.** A change spanning backend + frontend + a PRD is three separate
+  commits in three separate repos. Push nothing without being asked.
+
+### One working tree, one dev server
+
+There are no git worktrees here — every session shares `f:\docs\Laika`. If more than one session
+may be active, assume another is editing the same files: prefer narrow, quickly-committed
+changes over long-lived working-tree state.
+
+Local dev starts from **one** script, run from the backend directory:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-dev.ps1
+```
+
+It brings up docker, the backend (`:3000`) and the frontend (`:3001`) together, and only one
+session can hold those ports. **Never run `npm run build` while it is running** — it competes
+with `nest start --watch` over `dist/` and takes the running backend down.
+
+### Migrations reach every tenant database on boot
+
+`TenantMigrationsService.onApplicationBootstrap` runs in the background on every backend start:
+it reads `prisma/migrations/`, **sorts the directory names lexicographically**, and applies
+anything unregistered to **every active tenant's database**. Failures are swallowed into a
+`logger.warn`.
+
+- A half-written migration in your branch propagates to every local tenant DB the moment anyone
+  starts the dev server. It does not wait to be asked.
+- Directory names are both the ordering and the identity. Migrations authored the same day can
+  collide or order wrongly, and **renaming a migration directory makes it run again** — the
+  `_tenant_migrations` registry is keyed by name.
+- Migrations are hand-written SQL, not generated. Master-DB ones use `IF NOT EXISTS` so they can
+  be pre-applied before a deploy.
+
+Never run migrations, seeds, or destructive SQL against an existing tenant or production
+database. Create a throwaway database, use it, drop it.
+
+### There is no global `ValidationPipe`
+
+Request bodies are plain objects, not DTO classes, and the `@Body()` type annotations are
+TypeScript only — erased at runtime. Nothing validates them.
+
+**So mass assignment is the default here**, and it has bitten this codebase repeatedly:
+`PATCH /tenants/:slug`, `PATCH /tenants/:slug/templates/:id`, and — still live —
+`POST` and `PATCH /api/funnel/stages`, which forward the raw body into
+`db.funnelStage.create` / `.update`.
+
+The fix is always a **named allowlist** in the controller or service. Do **not** reach for
+`app.useGlobalPipes(new ValidationPipe({ whitelist: true }))`: almost no endpoint here has a DTO
+to validate against, so a global pipe would reject most of the API.
+
+The same shape applies to guards. `@Roles` on a controller class only works because `RolesGuard`
+reads `reflector.getAllAndOverride([handler, class])` — with `reflector.get(handler)` it silently
+ignored every class-level `@Roles`, leaving three controllers unguarded. **A decorator is not a
+control until a test asserts on it.**
+
+### Frontend
+
+- `lib/api.ts` is the entire backend contract in one file. Every API-touching feature edits it,
+  which makes it the most likely merge conflict in the repo.
+- Several CRM screens keep their **own hardcoded copy** of backend enums — funnel stage names and
+  colours live in `contacts/page.tsx`, `resultados/page.tsx` and `inicio/page.tsx`. Changing
+  something backend-side that these duplicate means changing them too, or the feature ships
+  looking broken. See [docs/prd-funnel-stage-criteria.md](docs/prd-funnel-stage-criteria.md) §8.
+- `npm run lint` starts from a **non-zero baseline** (`react-hooks/set-state-in-effect`). Record
+  the count before you change anything and do not grow it — there is no test suite to catch
+  regressions otherwise.
+
 ## Commands quick reference
 
 Run these **inside the respective sub-project directory**, not from the root.
+
+For normal local development use `start-dev.ps1` above, not these directly.
 
 **Backend** (`soylaika.backend/`):
 ```bash
