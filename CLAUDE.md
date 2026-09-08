@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`f:\docs\Laika` is a workspace folder holding two **independent git repositories** for
+`f:\docs\Laika` is a workspace holding three **independent git repositories** for
 "SoyLaika" — a multi-tenant CRM with an AI bot that handles WhatsApp/Instagram sales
-conversations. There is no root git repo and no monorepo tooling (no workspaces, no shared
-lockfile) tying the two together — they're just siblings on disk, each with its own `.git`,
+conversations. There is no monorepo tooling (no workspaces, no shared lockfile) tying them
+together — the two code repos are siblings on disk, each with its own `.git`,
 `node_modules`, and CLAUDE.md:
 
 - **`soylaika.backend/`** — NestJS + Prisma + PostgreSQL + BullMQ (Redis) API. Multi-tenant
@@ -15,6 +15,9 @@ lockfile) tying the two together — they're just siblings on disk, each with it
   or `X-Tenant-Slug` header. Runs on `:3000`.
 - **`soylaika.frontend/`** — Next.js App Router CRM client ("asap-crm"). Talks to the backend
   exclusively through `lib/api.ts`; no server-side data layer of its own. Runs on `:3001`.
+
+The **root itself is the third repo** (`laikaworkspace`) — it tracks this file, `docs/`, and
+nothing else. Committing here does not touch either code repo, and vice versa.
 
 **Always read the sub-project's own `CLAUDE.md` before working inside it** —
 [soylaika.backend/CLAUDE.md](soylaika.backend/CLAUDE.md) and
@@ -36,6 +39,29 @@ defined in `soylaika.frontend/lib/api.ts`.
 When a change spans both repos (e.g. a new backend endpoint the CRM needs to call), expect
 to touch `soylaika.backend/src/**` and then add the corresponding function to
 `soylaika.frontend/lib/api.ts` — see that file's own CLAUDE.md section for the pattern.
+
+## `docs/` — design docs and plans
+
+Product requirement docs and implementation plans live in the **root repo**, deliberately kept
+out of the two code repos: they were previously committed alongside the code and grew to ~45%
+of the backend PR diff, which made review harder rather than easier. Nothing in `docs/` is read
+at runtime.
+
+- **`docs/prd-*.md`** — one file per feature, each titled `PRD N` in its heading. Current set,
+  in numbering order: RAG knowledge layer (1), FAQ content ingestion (2), FAQ admin UI (3),
+  FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
+  versioning (7), funnel stage criteria (8). PRDs 1–5 are implemented and in production;
+  6–8 are proposed.
+- **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
+  written from a PRD before execution. See `docs/plans/README.md`.
+
+**A PRD is the design record, not a changelog.** When implementation reveals the design was
+wrong — a control that doesn't hold, a coupling nobody knew about — correct the PRD in place
+and say so in the commit message. Several sections in the current set exist only because a
+claim was checked against the code and turned out to be false.
+
+Cross-references between PRDs are by section (`PRD 6 §4.0`), so renumbering a section means
+grepping `docs/` for references to it.
 
 ## `briefing-contexto-agentes-ES.md`
 
