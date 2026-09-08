@@ -20,6 +20,7 @@ Two uses, in priority order:
 
 1. **Track production over time.** Run it periodically against the live tenant and see whether behaviour is drifting up or down.
 2. **Check a change before and after.** Run it, change a prompt, run it again, read the two records side by side. **Comparison is manual for now** — the suite produces the evidence; a person draws the conclusion.
+3. **Grow with the business.** The examples are supplied by the people who know which conversations matter (§9), and the conversation that went wrong today becomes tomorrow's test.
 
 Automated A/B judging is explicitly out (§3). That decision shapes §6.
 
@@ -199,6 +200,23 @@ A different, stronger model than the one under test, on the platform key rather 
 
 Keep ~20 turns with a **human score recorded**. Whenever the judge model or prompt changes, re-score them and report agreement. A judge that agrees 60% of the time is a random number generator with good grammar, and every trend built on it is decoration.
 
+### 6.5 Two judging modes, decided per turn
+
+- **No reference** — the judge gets the assembled prompt (§4.2.1) and asks whether the reply complied, plus the quality rubric. The general case.
+- **Reference present** — the judge gets the ideal reply and asks whether the actual one says the same thing in substance. Ignore wording; a different phrasing that conveys the same facts and the same next step passes.
+
+Reference mode is the **stronger** signal: it is the only thing here that catches a reply which follows every rule and is still wrong about the business. It is also **cheaper**, because it does not need the ~2,830-token rulebook — the ideal answer *is* the standard. The cost moved from tokens to human authoring, which is why it is optional and per-turn.
+
+A scenario can mix them: an ideal reply on the turn that matters, nothing on the rest.
+
+### 6.6 The judge has an off switch
+
+**Judging is a per-run toggle, not a mode of the product.** Deterministic checks always run; the judge is opted into.
+
+That is not a convenience — it is what makes iteration usable. A full pass with the judge off costs **$0.04** and takes as long as the conversations do; with the judge on it is around a dollar (§13 q6). So the loop is: run with the judge off while you are still moving things, turn it on when you want an opinion worth paying for.
+
+It also keeps the trustworthy half available when the judge is unavailable, misconfigured, or its provider is down.
+
 ## 7. Keeping scores comparable over time
 
 **This is the part that makes the historical record worth keeping, and the part most likely to be skipped.**
@@ -226,6 +244,8 @@ Stored in the master database of wherever the run happened. Production runs are 
 
 - `EvalRun` — tenant slug, environment, corpus version, judge model, judge-prompt version, **the observed configuration snapshot** (assembled prompts per agent, rules, business profile, live chunk count, retrieval settings, models — §4.0), started/finished, cost, who or what triggered it
 - `EvalTurn` — run, scenario, repetition, turn index, **the full reply text**, `agentType`, `handToHuman`, retrieval outcome, tokens, cost, latency
+- `EvalScenario` — key, group, purpose, customer turns, optional ideal replies, `dependsOn`, who added it and when. **Editable data**, not a fixture file (§9)
+- `EvalRun` also stores **the scenarios as they were at run time** (§9.2), so a later edit cannot rewrite what a past run meant
 - `EvalCheck` — turn, check name, pass/fail, detail
 - `EvalScore` — turn, criterion, score, the judge's one-line reason
 
@@ -236,7 +256,19 @@ Two rules:
 
 ## 9. Corpus
 
-Four groups. The first already exists.
+**The corpus is data the business provides, not fixtures engineers write.** This is §4.0's rule applied to the examples themselves: the conversations worth testing are the ones the business knows about, and they will keep arriving after the suite is built. Anything that requires an engineer to add a scenario is the wrong shape.
+
+The 34 existing ones are the **seed**, imported once — not the definition of the corpus.
+
+### 9.0 How examples get in
+
+The input mechanism is deliberately open (§13 q10), but one path is worth naming because it is both the cheapest to build and the best source of examples:
+
+**Promote a real conversation.** The tenant database already holds every `Contact` and `Message`. A button on a real conversation — *"usar como ejemplo de prueba"* — copies the customer turns into a scenario. No authoring, and the examples are real customer language rather than someone's idea of it. It is also the natural response to a bad answer: the conversation that went wrong becomes the test that catches it next time.
+
+Alongside that, paste-or-upload for examples written from scratch.
+
+### 9.1 Groups
 
 **Common conversations (34, existing).** `apertura`, `venta`, `objeciones`, `cierre`, `envio`, `desordenado`, `revendedor`, `arquitecto`, `sincatalogo`… in `scripts/test-bot.js`. They move into versioned fixtures, gaining deterministic expectations. **This is the expensive part and it is already done.**
 
@@ -245,7 +277,7 @@ Two things to know before treating them as "the corpus":
 - **They are ITT's, not generic.** The messages say "me gusta el Nexery", "vinilo autoadhesivo", "empapelados", "almohadones". They serve the only real tenant perfectly well and cannot be reused for a customer in another trade without rewriting. That is fine; what is not fine is planning as though the corpus were portable.
 - **They are coupled to the catalog.** "Me gusta el Nexery" depends on that product existing in `Product`. Change the catalog and scenarios unrelated to the change start failing. Each scenario should declare which business data it depends on, so that failure reads as "the catalog changed" rather than "the bot got worse".
 
-### 9.1 What a scenario actually is
+### 9.2 What a scenario actually is
 
 Phase A's deliverable, and the document did not say what it produces. A scenario is:
 
@@ -255,16 +287,15 @@ Phase A's deliverable, and the document did not say what it produces. A scenario
 | `group` | common / rag / edge / adherence |
 | `purpose` | One line: what this is for. A reviewer must be able to tell when it stopped testing that |
 | `messages[]` | The customer's turns, in order |
+| `messages[].idealReply` | **Optional.** What the bot *should* have said on that turn. Where present the judge compares against it (§6.5); where absent it judges against the assembled prompt |
 | `expects` | Scenario-specific expectations only (below) |
 | `dependsOn` | Business data it relies on — product names, FAQ topics. A failure here reads as "the catalog changed", not "the bot got worse" (§9) |
 
 **Universal checks are not written per scenario.** Tier-1 invariants (§4.1) run on every turn of every scenario automatically. `expects` carries only what is specific: *"retrieval should fire"*, *"should escalate by turn 3"*, *"should not name a price"*. Conflating the two would mean restating the invariants 28 times and forgetting one.
 
-**`corpus_version`** is the git tag of the fixtures directory, stamped on every run (§7). Not a hand-maintained number.
+**Scenarios are editable data, so a run stores the scenarios it actually ran** — their text, not a pointer to a row someone may later edit. Same reasoning as `EvalTurn` keeping the full reply (§8): a corpus edit must not be able to rewrite the meaning of last month's numbers. `corpus_version` is then a hash of that stored set, computed rather than maintained.
 
 **The scenario cannot assume which agent answers.** The orchestrator routes per turn, so `expects` may name an agent only as an expectation to check (*"should route to soporte"*), never as a precondition. §9.2 covers what that does to aggregation.
-
-### 9.2 Groups
 
 **RAG usage.** Questions with an approved answer (must fire, must be grounded); questions *near* one but uncovered (must not fire, must not invent); greetings and one-word replies (prefilter must skip, zero embedding calls); a chunk targeted at a different agent.
 
@@ -299,12 +330,12 @@ Two more returns are needed for the same reason — each is one field, and each 
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Fixtures: move the 34 scenarios out of `test-bot.js`, add tier-1 expectations and their data dependencies | The corpus exists; this makes it addressable. No new infrastructure |
+| **A** | `EvalScenario` storage + import: seed the 34 from `test-bot.js`, and the "promote a real conversation" button (§9.0) | The corpus has to be data the business can add to before anything else matters. Seeding proves the shape against 34 real examples |
 | **B** | Engine + tier-1 deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost, and measures its own variance for free (§13 q3) |
 | **C** | Three returns from `chat()`: assembled system prompt, `RetrievalOutcome`, raw model output (§10) | **Prerequisite for the judge**, not a follow-up. Without the assembled prompt there is no compliance judging (§4.2.1) — only vague quality scoring |
 | **D** | Judge: compliance against the real prompt, quality criteria, version stamping (§7), the labelled agreement set (§6.4) | The interpretation layer. Built on B and C rather than instead of them |
 | **E** | `source: 'eval'` tagging and CRM filtering | Must land **before** the panel: the panel runs against production, and without this it fills the customer's CRM with fake leads |
-| **F** | Panel: run, quick-check mode, results, run history | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
+| **F** | Panel: manage examples, run with the judge on or off (§6.6), results, run history | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
 
 **B is useful on its own**, before any judge exists: it already catches an invented price, a broken escalation or a leaked routing marker, at zero cost per run — those are the tier-1 invariants, and they need no prompt to verify.
 
@@ -314,7 +345,7 @@ Two more returns are needed for the same reason — each is one field, and each 
 
 ## 13. Open questions
 
-1. **How often does production run?** Tier-1-only runs cost $0.13 and could be nightly today. Judged runs are ~$1.60 (question 6), so nightly judging is ~$50/month — affordable, but worth deciding deliberately rather than defaulting to it. A plausible split: tier-1 nightly, judged weekly and on demand after a prompt change.
+1. **How often does production run?** Tier-1-only runs cost $0.13 and could be nightly today. Judged runs are ~$1.60 (question 7), so nightly judging is ~$50/month — affordable, but worth deciding deliberately rather than defaulting to it. A plausible split: tier-1 nightly, judged weekly and on demand after a prompt change.
 2. ~~**Cost per run.**~~ **Measured, from `AiUsage` in the local environment.** A turn is **three** model calls, not two — there is a `classifier` alongside the orchestrator and the agent:
 
    | kind | average cost |
@@ -326,15 +357,16 @@ Two more returns are needed for the same reason — each is one field, and each 
 
    ≈ **$0.0005 per turn**. A full run is **34 scenarios, 87 customer turns, ×N=3 = 261 turns**: **$0.13 without the judge**.
 
-   Cents, not dollars — **for the conversation**. The judge is a different story, see question 6.
+   Cents, not dollars — **for the conversation**. The judge is a different story, see question 7.
 
    **Caveat:** the number comes from `tenant-dev`, which may use cheaper models than ITT in production. Re-run the same query against production's `AiUsage` before fixing a cadence. The order of magnitude — cents per run — is unlikely to move.
 
    Who pays: judging is platform cost; the conversation runs on the tenant's key by construction.
 3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase B can do for free by running the same scenario repeatedly and looking at the spread of its deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
-5. **Does the corpus survive the prompt migration?** The 34 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
-6. ~~**The judge's cost.**~~ **Measured, not estimated.** §4.2.1 requires sending the *assembled* system prompt with every judgement, so the rulebook size drives everything.
+5. **How do examples get in, beyond promoting a real conversation?** (§9.0) Paste into a form, upload a file, or an import format. Whoever provides them decides; the storage in §8 does not care. Worth settling before phase A's UI, not before its schema.
+6. **Does the corpus survive the prompt migration?** The 34 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
+7. ~~**The judge's cost.**~~ **Measured, not estimated.** §4.2.1 requires sending the *assembled* system prompt with every judgement, so the rulebook size drives everything.
 
    Measured inputs, all from the local tenant and `scripts/test-bot.js`:
 
@@ -365,9 +397,9 @@ Two more returns are needed for the same reason — each is one field, and each 
 
    At a mid-priced judge, scenario-level: **~$1.60 per run, ~$50/month nightly.** Affordable, but not free the way the tier-1 checks are — which is another reason phase B stands on its own.
 
-7. **Does the orchestrator's routing break aggregation?** The orchestrator picks the agent per turn, non-deterministically. Across N repetitions the same scenario can route to `ventas` once and `soporte` twice — so compliance is judged against **different rulebooks** in the same aggregate. Options: aggregate per (scenario, agent) pair, treat a routing change as its own finding, or both. Needs the variance data from phase B before deciding.
+8. **Does the orchestrator's routing break aggregation?** The orchestrator picks the agent per turn, non-deterministically. Across N repetitions the same scenario can route to `ventas` once and `soporte` twice — so compliance is judged against **different rulebooks** in the same aggregate. Options: aggregate per (scenario, agent) pair, treat a routing change as its own finding, or both. Needs the variance data from phase B before deciding.
 
-8. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
+9. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
 
 ## 14. Risks
 
