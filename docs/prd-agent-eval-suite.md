@@ -157,6 +157,24 @@ So a production run **will** create contacts. With no separate tenant, that has 
 
 **A run costs real money** against the tenant's own model budget. The runner estimates before starting and records actual spend (`AiUsage` already tracks model, kind, tokens and cost).
 
+### 5.3 A run has side effects outside the CRM
+
+Tagging contacts (§5.2) keeps fake leads out of lists and counts. It does **not** stop everything else a conversation triggers, and one of those reaches real people:
+
+**Escalation notifies real staff.** When a turn hands off, `HandoffService.delegateToHuman` writes `Notification` rows *and* calls `push.sendToUsers` — an actual Web Push to the sales team's phones. The corpus deliberately contains escalation scenarios (§9.2), so **a nightly production run would push notifications to ITT's team about leads that do not exist, at 3am.**
+
+This is not hypothetical and not new: `crm.service.ts:592` shows `/api/test-chat` already calls `delegateToHuman` today. The suite would simply do it 28 times a night.
+
+Options, cheapest first:
+
+- **Suppress notifications for eval contacts.** `delegateToHuman` already receives the contact; skipping the notification and push when `source = 'eval'` is a guard in one place. Loses the ability to check that escalation *notified*, which is worth little compared to not paging people.
+- **Exclude escalation scenarios from scheduled runs**, keep them for on-demand ones. Cheap, and gives up the coverage that matters most.
+- Suppress by default and let the on-demand panel run opt in.
+
+**Escalation also sets `botActive = false`.** Subsequent turns in that scenario get no reply. The runner has to treat that as a legitimate end-of-scenario, not a timeout — and a scenario whose `expects` says "should escalate by turn 3" needs no turns after 3.
+
+**Tool calls hit live data.** `searchProducts` queries the real catalog. A scenario naming a product that has since been delisted does not merely fail its expectation — the conversation takes a different path from there on. That is the `dependsOn` field in §9.1 doing its job, and it is why a corpus failure must be read as a question, not a verdict.
+
 ## 6. The judge
 
 ### 6.1 Absolute scores, and why that is a downgrade taken deliberately
@@ -192,11 +210,11 @@ A score is meaningless without knowing what produced it. Three things silently r
 - **The scenario corpus changes.** Adding harder scenarios lowers the average with no change in the bot.
 - **The tenant's configuration changes** — a prompt edit, a new batch of FAQ chunks, a model swap. Unlike the other three this one is usually the *point* of the measurement, but it is still a variable: a score drop after a prompt migration is not a regression in the bot, it is a different bot. §4.0 records the observed configuration on every run so the two can be told apart.
 
-So **every stored score carries the judge model, the judge-prompt version, and the corpus version.** A chart that mixes them is lying, and the UI must refuse to draw a single line across a boundary — it shows a break instead.
+So **every stored score carries the judge model, the judge-prompt version, the corpus version, and a fingerprint of the observed tenant configuration (§4.0).** A chart that mixes them is lying, and the UI must refuse to draw a single line across a boundary — it shows a break instead.
 
 ### 7.1 Calibration runs
 
-When any of those three changes, the old numbers do not become wrong — they become *incomparable*, which is worse because it is invisible.
+When any of those four changes, the old numbers do not become wrong — they become *incomparable*, which is worse because it is invisible.
 
 The fix: keep the stored transcripts (§8), and when the judge changes, **re-score a sample of historical runs with the new judge**. That produces a delta — "the new judge scores 0.4 lower on the same replies" — which turns an invisible break into a measured step. Then either the history is re-scored in full, or the chart shows two segments with the offset stated.
 
@@ -227,17 +245,38 @@ Two things to know before treating them as "the corpus":
 - **They are ITT's, not generic.** The messages say "me gusta el Nexery", "vinilo autoadhesivo", "empapelados", "almohadones". They serve the only real tenant perfectly well and cannot be reused for a customer in another trade without rewriting. That is fine; what is not fine is planning as though the corpus were portable.
 - **They are coupled to the catalog.** "Me gusta el Nexery" depends on that product existing in `Product`. Change the catalog and scenarios unrelated to the change start failing. Each scenario should declare which business data it depends on, so that failure reads as "the catalog changed" rather than "the bot got worse".
 
+### 9.1 What a scenario actually is
+
+Phase A's deliverable, and the document did not say what it produces. A scenario is:
+
+| Field | Purpose |
+|---|---|
+| `key` | Stable id. Runs across months join on this |
+| `group` | common / rag / edge / adherence |
+| `purpose` | One line: what this is for. A reviewer must be able to tell when it stopped testing that |
+| `messages[]` | The customer's turns, in order |
+| `expects` | Scenario-specific expectations only (below) |
+| `dependsOn` | Business data it relies on — product names, FAQ topics. A failure here reads as "the catalog changed", not "the bot got worse" (§9) |
+
+**Universal checks are not written per scenario.** Tier-1 invariants (§4.1) run on every turn of every scenario automatically. `expects` carries only what is specific: *"retrieval should fire"*, *"should escalate by turn 3"*, *"should not name a price"*. Conflating the two would mean restating the invariants 28 times and forgetting one.
+
+**`corpus_version`** is the git tag of the fixtures directory, stamped on every run (§7). Not a hand-maintained number.
+
+**The scenario cannot assume which agent answers.** The orchestrator routes per turn, so `expects` may name an agent only as an expectation to check (*"should route to soporte"*), never as a precondition. §9.2 covers what that does to aggregation.
+
+### 9.2 Groups
+
 **RAG usage.** Questions with an approved answer (must fire, must be grounded); questions *near* one but uncovered (must not fire, must not invent); greetings and one-word replies (prefilter must skip, zero embedding calls); a chunk targeted at a different agent.
 
 **Edge cases.** Prompt injection in a customer message *and* in a knowledge chunk; contradictory instructions; a price the catalog does not have; abusive input; a mid-conversation language switch; empty and emoji-only messages.
 
-**Prompt adherence.** One scenario per invariant in the briefing — voseo, WhatsApp formatting, never inventing business data, never exposing routing, escalation criteria.
+**Prompt adherence.** One scenario per invariant in the briefing — voseo, never inventing business data, never exposing routing, escalation criteria. (Formatting is not in this list: see §4.3.)
 
 Every scenario states **what it is for**, so a reviewer can tell when it stopped testing that. The corpus is versioned, and the version is stamped on every run (§7).
 
 ## 10. Instrumentation needed
 
-One change, and every RAG measurement depends on it.
+**Three optional fields on one existing return value.** Each unblocks a measurement that is otherwise impossible, and together they are the whole of phase C.
 
 `AiService.chat()` returns `{ reply, statusChange, agentType, handToHuman, attachments }`. The `RetrievalOutcome` — `fired`, `topScore`, `chunkIds`, `prefilterHit`, `cacheHit`, `embedMs` — is computed inside and written to a log line, then discarded.
 
@@ -275,10 +314,10 @@ Two more returns are needed for the same reason — each is one field, and each 
 
 ## 13. Open questions
 
-1. **How often does production run?** With the cost measured (question 2), nightly is affordable at roughly $15/month. It is a product decision now, not a budget one.
+1. **How often does production run?** The *conversation* half is settled and cheap (question 2). The *judge* half is not (question 6) and is the one that decides this. Tier-1-only runs are free and could be nightly today; judged runs need question 6 answered first.
 2. ~~**Cost per run.**~~ **Measured, from `AiUsage` in the local environment.** A turn is **three** model calls, not two — there is a `classifier` alongside the orchestrator and the agent:
 
-   | kind | costo promedio |
+   | kind | average cost |
    |---|---|
    | `orchestrator` | $0.000148 |
    | `classifier` | $0.000156 |
@@ -287,15 +326,28 @@ Two more returns are needed for the same reason — each is one field, and each 
 
    ≈ **$0.0005 per turn**. A full run (28 scenarios × ~4 turns × N=3) is ~336 turns: **~$0.17 without the judge**, and with a more expensive judge per turn, on the order of **$0.50 total**.
 
-   Cents, not dollars. That answers question 1: running it nightly costs about **$15 a month**, and cost stops being a reason to measure infrequently.
+   Cents, not dollars — **for the conversation**. The judge is a different story, see question 6.
 
    **Caveat:** the number comes from `tenant-dev`, which may use cheaper models than ITT in production. Re-run the same query against production's `AiUsage` before fixing a cadence. The order of magnitude — cents per run — is unlikely to move.
 
    Who pays: judging is platform cost; the conversation runs on the tenant's key by construction.
-3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase C can do for free by running the same scenario repeatedly and looking at the spread of deterministic results.
+3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase B can do for free by running the same scenario repeatedly and looking at the spread of its deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
 5. **Does the corpus survive the prompt migration?** The 28 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
-5. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
+6. **The judge's cost was understated, because the rulebook is large.** §4.2.1 requires sending the *assembled* system prompt with every judgement. ITT's `ventas` prompt alone is 7,497 characters; with `GUARDRAILS`, `CONVERSACION`, rules, business profile and stages the assembled string is plausibly ~15k characters ≈ **4–5k tokens per judge call**.
+
+   At 336 turns that is ~1.7M input tokens per run. On a judge-grade model at roughly $3/M input, **~$5 per run, not $0.50** — and nightly becomes **~$150/month, not $15**. An order of magnitude, and it lands entirely on the platform key.
+
+   Two mitigations, both worth taking before setting a cadence:
+
+   - **Judge per scenario, not per turn.** One call carrying the rulebook plus the whole conversation, instead of four carrying it four times. Cuts the dominant cost ~4x and is arguably better judging — compliance with *"un paso a la vez"* or *"no repitas el saludo"* is a property of the conversation, not of a turn.
+   - **Prompt caching**, where the provider supports it. The rulebook is identical across every judgement in a run.
+
+   Until this is measured for real, the nightly cadence in question 1 is not settled. **The tier-1 checks stay free either way**, which is another reason phase B is worth having before phase D.
+
+7. **Does the orchestrator's routing break aggregation?** The orchestrator picks the agent per turn, non-deterministically. Across N repetitions the same scenario can route to `ventas` once and `soporte` twice — so compliance is judged against **different rulebooks** in the same aggregate. Options: aggregate per (scenario, agent) pair, treat a routing change as its own finding, or both. Needs the variance data from phase B before deciding.
+
+8. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
 
 ## 14. Risks
 
@@ -303,5 +355,5 @@ Two more returns are needed for the same reason — each is one field, and each 
 - **A judge change silently invalidates history.** The specific, likely failure. §7.1 is the whole answer, and it only works because §8 stores transcripts.
 - **Optimising for the judge** rather than for customers. The deterministic checks and real transcripts are the counterweight.
 - **Eval contacts leak into business metrics.** One missed call site and the customer's lead count is wrong. The filter needs a test, not just a code review.
-- **A bad prompt reaches customers while it is being evaluated** (§5.3). The accepted cost of not building the override path. Mitigated by the quick-check mode and one-click revert, not eliminated — if it bites, the answer is the override path.
+- **A bad prompt reaches customers while it is being evaluated.** Owned by [PRD 7 §4](prd-agent-config-versioning.md), since it arises from the save-then-evaluate workflow rather than from running the suite.
 - **Cost surprises.** Bounded by phase C being free and by estimating before every judged run.
