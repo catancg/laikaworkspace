@@ -106,7 +106,7 @@ Two structural notes:
 - **The codebase already has the right pattern and does not use it consistently.** `isWon`/`isLost` exist and are read properly in several places. One line does both at once: `if (currentStage.slug === 'no-contesta' || currentStage.isLost)`. Half semantic, half hardcoded, same condition.
 - **`Contact.status` is a denormalized copy of the stage slug** (`data: { stageId: stage.id, status: 'interesado' }`), and the revenue query reads `status`, not the stage. So the coupling is duplicated into a second column.
 
-Fixing this properly means semantic flags for the two remaining concepts the code needs — "the stage meaning no reply" and "the stage meaning actively engaged" — plus moving the metrics off `Contact.status`. It is a separate piece of work and §11 q1 asks whether it should happen before or after this one.
+Fixing this properly means semantic flags for the two remaining concepts the code needs — "the stage meaning no reply" and "the stage meaning actively engaged" — plus moving the metrics off `Contact.status`. It is a separate piece of work and §12 q1 asks whether it should happen before or after this one.
 
 ## 7. Seeding and migration
 
@@ -129,32 +129,84 @@ Slug shown but not editable, with one line saying why. Delete disabled, with the
 - Give the phrases customers actually use — the current `perdido` criteria list six of them, and that is why it works.
 - Say what does **not** count. Half the value in the current `cotizado` text is *"Mencionar precios de lista o por m² NO alcanza"*.
 
-## 9. Interaction with the eval suite
+## 9. Making it safe
+
+The criteria are free text written by a person and injected into a system prompt that runs on every conversation. That deserves more thought than "add a column".
+
+### 9.1 The role trap, and the main recommendation
+
+**`criteria` must not be editable through the existing funnel endpoints.**
+
+`PATCH /api/funnel/stages/:id` and `DELETE /api/funnel/stages/:id` are `@Roles('admin', 'superadmin')` — **tenant admins**. Adding `criteria` to `FunnelStage` and surfacing it on the existing funnel screen would hand a tenant admin write access to a system prompt, silently, on the day the column ships. The requirement says superadmin.
+
+So: **a separate superadmin-only route** — `PATCH /tenants/:slug/funnel/stages/:id/criteria`, on `TenantsController`, which is superadmin by class — and the existing admin-facing update explicitly **strips** `criteria` from its payload, the same named-allowlist pattern already used on `PATCH /tenants/:slug` after the mass-assignment fix.
+
+Without that strip, the admin endpoint takes a partial body and would happily write the field.
+
+### 9.2 Keep the format instruction last
+
+The prompt ends by demanding a specific JSON shape:
+
+```
+{"stage":"<slug exacto de la lista>","info":{ ...}}
+```
+
+**That instruction must stay after the criteria block, always.** Criteria text sits in the middle of the prompt; the closing format rule is what stops a careless — or hostile — criterion from redefining the output. It happens to be ordered correctly today. Make it a rule rather than an accident, and put the criteria inside a delimited region so it is visibly a data block rather than more instructions.
+
+### 9.3 Validate on write
+
+Criteria are prose about what a customer did. They never legitimately need braces, JSON, or instructions to the model.
+
+- **Reject `{` and `}`** — the only reason for them here is to interfere with the output shape.
+- **Cap the length** (§12 q3). The whole block ships on every classification call.
+- **Flag imperative-to-the-model phrasing** — *"respondé"*, *"ignorá"*, *"formato"*, *"en vez de"*. A warning, not a block: legitimate criteria describe the customer, so a criterion addressing the model is usually a mistake and occasionally an attack.
+
+### 9.4 Fail safe, not empty
+
+If every stage has blank criteria — a bad migration, a bulk delete — the prompt must fall back to the seeded defaults, not ship an empty `Criterio:` block. Classification silently degrading to name-guessing is worse than a stale default.
+
+Keep the seeded default stored **alongside** the current value rather than only in code, so "restore the default" (§8) still works after the constant is eventually deleted.
+
+### 9.5 Proportionality: what the blast radius actually is
+
+Worth stating plainly, because it should govern how much machinery to build: `analyzeConversation` **never produces text sent to a customer.** It returns a stage and extracted CRM fields.
+
+So the worst case of a bad criterion is misfiled leads and corrupted `Contact.details` — bad, and invisible for a while, but not "the bot told a customer something false". This is a lower-severity surface than agent prompts (PRD 7), and the controls should be lighter in proportion: a role boundary, a validation, a restore button, and detection via PRD 6 — not an approval queue.
+
+### 9.6 A pre-existing hole this PRD does not open
+
+`DELETE /api/funnel/stages/:id` is available to tenant admins **today**, and §6 shows deleting a stage breaks follow-ups, the revive-on-reply path, and revenue reporting. That is true before this PRD and independent of it.
+
+It is worth fixing in the same pass, because §4 already requires the panel to disable deletion — doing it in the UI while the endpoint stays open would be a control that is not a control.
+
+## 10. Interaction with the eval suite
 
 PRD 6's corpus contains scenarios whose `expects` include stage transitions. Once criteria are tenant data, they become part of the configuration fingerprint (PRD 6 §4.0) — a criteria edit is a configuration change, and a classification that shifts afterwards is expected rather than a regression.
 
 This is also the cheapest way to tell whether an edited criterion is better: run the suite before and after.
 
-## 10. Phasing
+## 11. Phasing
 
 | Phase | Scope |
 |---|---|
 | **A** | `criteria` column, seeded from the current constants, backfilled for existing tenants; prompt generated from it; the `no-contesta` fix |
-| **B** | Panel: edit, restore default, slug locked, delete disabled |
-| **C** | The transition policy (§5.2) as a tenant setting |
+| **B** | Superadmin-only route (§9.1) + `criteria` stripped from the admin endpoint; delete closed at the API (§9.6); validation (§9.3) |
+| **C** | Panel: edit, restore default, slug locked, delete disabled |
+| **D** | The transition policy (§5.2) as a tenant setting |
 
-**A alone is worth shipping.** It changes no behaviour and removes the second source of truth, which is the actual defect.
+**A alone is worth shipping** — it changes no behaviour and removes the second source of truth, which is the actual defect. But **A must not ship without B**: the moment `criteria` exists as a column it is writable through the tenant-admin endpoint, so the role boundary has to land in the same release, not the next one.
 
-## 11. Open questions
+## 12. Open questions
 
 1. **Fix the slug coupling (§6) before or after this?** After is defensible: this PRD does not make the coupling worse, and locking slugs in the panel contains it. But every day it stays, "the funnel is configurable" is half-true in a way that will eventually cost a tenant their revenue numbers.
 2. **Should criteria be per-agent as well as per-tenant?** `analyzeConversation` runs once per conversation regardless of which agent replied. Probably not, but worth naming before someone assumes it.
 3. **How long can a criteria field be?** The whole block goes into every classification call, so it is a per-conversation cost. The current seven total ~1,200 characters. A cap — or at least a visible character count — stops one enthusiastic edit from doubling the prompt.
 4. **Does the eval suite need a scenario per stage transition?** It would be the natural regression test for this feature, and it is the same corpus. Depends on PRD 6 phase A landing.
 
-## 12. Risks
+## 13. Risks
 
 - **Someone edits a criterion and the classifier gets worse, silently.** Conversations are misfiled for weeks before anyone notices. Mitigated by "restore the default" (§8) and properly by PRD 6 — this feature makes prompt-quality mistakes easier to introduce and PRD 6 is what detects them.
+- **`criteria` ships as a plain column and becomes tenant-admin editable** (§9.1). The specific way this feature turns into a privilege escalation, and it happens by omission rather than by decision — nobody has to do anything wrong beyond adding the column and reusing the existing screen.
 - **The panel implies the funnel is fully configurable** (§4). The single most likely misunderstanding, and the one that breaks revenue reporting.
 - **Criteria drift from the business.** The text says "cotizado is when you gave a total" long after the business changed how it quotes. Nothing detects this; it is the same class of staleness as PRD 6 §6.5.1.
 - **Empty criteria degrade classification quietly.** A stage with a blank field still appears in the list, so the model guesses from the name. Correct behaviour, but the panel should show which stages have no criteria rather than leaving it to be discovered.
