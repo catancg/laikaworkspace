@@ -78,7 +78,7 @@ Half semantic, half hardcoded, because the semantic half does not exist yet. **`
 | `color`, `order`, `notifyOnEnter` | Yes, already | No code branches on them |
 | `isWon` / `isLost` | Yes, already | Semantic flags the code reads properly |
 | **`kind`** | **No, once set** | Moving a stage between pipeline and out changes what every historical contact in it meant |
-| **`slug`** | **No** | **Already immutable** — `FunnelService.update()` accepts only `name`, `color`, `notifyOnEnter`, `isLost`, `isWon`. It stays that way |
+| **`slug`** | **No — and it is NOT protected today** | See §9.1. The type signature says `name/color/notifyOnEnter/isLost/isWon`; the implementation forwards the raw body to Prisma, so a tenant admin can rename a slug right now |
 | **Deleting a stage** | **No** | `findFirst({ where: { slug } })` returning null is an unhandled path in four files (§6). Disabling is the supported route |
 
 ### 4.1 Enabled, not deleted
@@ -195,13 +195,31 @@ The criteria are free text written by a person and injected into a system prompt
 
 ### 9.1 The role trap, and the main recommendation
 
-**`criteria` must not be editable through the existing funnel endpoints.**
+**`criteria` must not be editable through the existing funnel endpoints — and those endpoints have a live mass-assignment bug that has to be fixed in the same change.**
 
-`PATCH /api/funnel/stages/:id` and `DELETE /api/funnel/stages/:id` are `@Roles('admin', 'superadmin')` — **tenant admins**. Adding `criteria` to `FunnelStage` and surfacing it on the existing funnel screen would hand a tenant admin write access to a system prompt, silently, on the day the column ships. The requirement says superadmin.
+`PATCH /api/funnel/stages/:id` is `@Roles('admin', 'superadmin')` — **tenant admins**. And it forwards the request body straight into Prisma:
 
-So: **a separate superadmin-only route** — `PATCH /tenants/:slug/funnel/stages/:id/criteria`, on `TenantsController`, which is superadmin by class — and the existing admin-facing update explicitly **strips** `criteria` from its payload, the same named-allowlist pattern already used on `PATCH /tenants/:slug` after the mass-assignment fix.
+```ts
+// controller — the @Body() type is TypeScript, erased at runtime
+update(@Param('id') id, @Body() body: { name?; color?; notifyOnEnter?; isLost?; isWon? }, @Req() req) {
+  return this.funnel.update(id, body, req.tenantDb);
+}
+// service
+return db.funnelStage.update({ where: { id }, data });   // data IS the raw body
+```
 
-Without that strip, the admin endpoint takes a partial body and would happily write the field.
+There is no global `ValidationPipe` in this project, so nothing enforces that signature. Prisma accepts any real column it finds in `data`.
+
+**This is already exploitable, before this PRD.** A tenant admin can send `{"slug": "otra-cosa"}` today and rename a stage's slug, breaking all nine lookups in §6 — follow-ups, revive-on-reply, and the revenue query. It is the same shape as the mass-assignment bug fixed earlier in `PATCH /tenants/:slug`, in a different controller.
+
+Adding `criteria`, `kind` and `enabled` makes it worse: each new column is immediately writable by a tenant admin, with no code change and no decision. `criteria` in particular means write access to a system prompt.
+
+So phase B is:
+
+- **A named-field allowlist** on the existing update, forwarding only `name`, `color`, `notifyOnEnter`, `isLost`, `isWon` — never the raw body. This closes `slug` as a side effect.
+- **A separate superadmin-only route** for the new fields — `PATCH /tenants/:slug/funnel/stages/:id`, on `TenantsController`, which is superadmin by class.
+
+**This is why phase A cannot ship alone.** The surface already exists and already forwards whatever it is given; A simply puts something worth taking behind it.
 
 ### 9.2 Keep the format instruction last
 
@@ -268,7 +286,7 @@ This is also the cheapest way to tell whether an edited criterion is better: run
 ## 13. Risks
 
 - **Someone edits a criterion and the classifier gets worse, silently.** Conversations are misfiled for weeks before anyone notices. Mitigated by "restore the default" (§8) and properly by PRD 6 — this feature makes prompt-quality mistakes easier to introduce and PRD 6 is what detects them.
-- **`criteria` ships as a plain column and becomes tenant-admin editable** (§9.1). The specific way this feature turns into a privilege escalation, and it happens by omission rather than by decision — nobody has to do anything wrong beyond adding the column and reusing the existing screen.
+- **`criteria` ships as a plain column and is immediately tenant-admin writable** (§9.1), because the existing endpoint forwards the raw body into Prisma. Not a hypothetical: `slug` is writable that way today. The specific way this feature turns into a privilege escalation, and it happens by omission rather than by decision — nobody has to do anything wrong beyond adding the column and reusing the existing screen.
 - **The panel implies the funnel is fully configurable** (§4). The single most likely misunderstanding, and the one that breaks revenue reporting.
 - **Criteria drift from the business.** The text says "cotizado is when you gave a total" long after the business changed how it quotes. Nothing detects this; it is the same class of staleness as PRD 6 §6.5.1.
 - **Empty criteria degrade classification quietly.** A stage with a blank field still appears in the list, so the model guesses from the name. Correct behaviour, but the panel should show which stages have no criteria rather than leaving it to be discovered.
