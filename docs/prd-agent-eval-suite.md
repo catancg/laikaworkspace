@@ -44,11 +44,31 @@ Two consequences that run through the whole document:
 
 ## 4. What gets measured, and by what
 
-The dividing line is **not** "mechanical versus subjective". It is:
+### 4.0 The suite reads the system; it never encodes it
+
+**The governing rule of this whole document.** No check, expectation or rubric may be written against the configuration that happens to exist today. The production prompts already differ substantially from the local ones and are due to be migrated; anything baked from today's text is wrong on arrival.
+
+So at the start of every run the suite **introspects the tenant** and records what it found:
+
+| Read at run time | Why it cannot be a constant |
+|---|---|
+| Agent keys, names, `active`, tools | `agents.config.ts` is only the *seed*. The live set is rows a superadmin can rename, add to or deactivate |
+| The **assembled** system prompt per agent (§4.2.1) | Six sources, all editable, all tenant-specific |
+| `BotRule`, `BusinessProfile`, funnel stages | Injected into every prompt, edited from the panel |
+| Live FAQ chunks (`APPROVED` + `active`) | The knowledge base is loaded by the customer and changes weekly |
+| Retrieval settings, models | Per-deploy and per-tenant |
+
+Only two things may be hardcoded, and both are **imported from the code, never retyped**: the markers `AiService`/`FaqRetrievalService` themselves emit (`=== CONOCIMIENTO RECUPERADO ===`, `[[DERIVAR]]`), and the platform constants `GUARDRAILS` and `CONVERSACION`. If those change, the check changes with them because it is the same symbol.
+
+**The acceptance test for genericity: replacing every prompt in the tenant must require no code change in the suite.** That is exactly what the coming production migration will do, so it is not a hypothetical — it is a dress rehearsal that is already scheduled. If the suite needs editing when the prompts move, it was built wrong.
+
+**The configuration it observed is stamped on the run** and becomes a fourth axis of comparability alongside judge model, judge prompt and corpus version (§7). Without it, a score is a number with no idea what rules produced it.
+
+### 4.0.1 The dividing line between the two tiers
 
 > **Is the rule itself a constant in our code, or is it data the tenant can change?**
 
-A rule that lives in a tenant's prompt can be perfectly mechanical to verify and still be impossible to hardcode, because it is different for the next customer and different again after the next edit. Getting this backwards produces checks that are silently wrong for every tenant but the one they were written against.
+Not "mechanical versus subjective". A rule in a tenant's prompt can be perfectly mechanical to verify and still impossible to hardcode, because it differs per customer and changes on the next edit. Getting this backwards produces checks that are silently wrong for every tenant but the one they were written against.
 
 ### 4.1 Tier 1 — platform invariants, checked deterministically
 
@@ -56,12 +76,14 @@ True for every tenant regardless of what their prompts say, because the rule liv
 
 | Check | Where the rule lives |
 |---|---|
-| Leaked internal routing — `[[DERIVAR]]`, agent names, the retrieved-knowledge markers | `GUARDRAILS`, a platform constant |
+| Leaked internal routing — markers imported from code; **agent names read from the `Agent` table** (§4.0) | `GUARDRAILS` for the rule; the tenant for the names |
 | Invented a price or discount | `faq-lint.ts`, and a stated product rule |
 | Answer grounded in the chunk it retrieved | `faq-support.ts` computes exactly this |
 | Retrieval fired when it should | `RetrievalOutcome.fired` + `chunkIds` (§10) |
 | The escalation flag matches what the reply says | `handToHuman` returned by `chat()` |
 | ~~WhatsApp formatting~~ | **Not measurable as specified** — see §4.3 |
+
+Even here the *rule* is a platform constant while some *inputs* are not — the leak check needs the tenant's live agent names, and "retrieval should have fired" depends on what is actually in the knowledge base. Tier 1 means the rule is ours, not that nothing is read.
 
 **These are the only metric in this document that is trustworthy across months.** A pass rate is absolute, stable, and unaffected by which model is judging — which is precisely what §7 shows the judge scores are not.
 
@@ -168,6 +190,7 @@ A score is meaningless without knowing what produced it. Three things silently r
 - **The judge model changes.** A provider deprecates one, or someone upgrades. Same reply, different number.
 - **The judge prompt or rubric changes.** Adding a criterion shifts every score.
 - **The scenario corpus changes.** Adding harder scenarios lowers the average with no change in the bot.
+- **The tenant's configuration changes** — a prompt edit, a new batch of FAQ chunks, a model swap. Unlike the other three this one is usually the *point* of the measurement, but it is still a variable: a score drop after a prompt migration is not a regression in the bot, it is a different bot. §4.0 records the observed configuration on every run so the two can be told apart.
 
 So **every stored score carries the judge model, the judge-prompt version, and the corpus version.** A chart that mixes them is lying, and the UI must refuse to draw a single line across a boundary — it shows a break instead.
 
@@ -183,7 +206,7 @@ The fix: keep the stored transcripts (§8), and when the judge changes, **re-sco
 
 Stored in the master database of wherever the run happened. Production runs are the tracked series; local runs are for iteration.
 
-- `EvalRun` — tenant slug, environment, corpus version, judge model, judge-prompt version, started/finished, cost, who or what triggered it
+- `EvalRun` — tenant slug, environment, corpus version, judge model, judge-prompt version, **the observed configuration snapshot** (assembled prompts per agent, rules, business profile, live chunk count, retrieval settings, models — §4.0), started/finished, cost, who or what triggered it
 - `EvalTurn` — run, scenario, repetition, turn index, **the full reply text**, `agentType`, `handToHuman`, retrieval outcome, tokens, cost, latency
 - `EvalCheck` — turn, check name, pass/fail, detail
 - `EvalScore` — turn, criterion, score, the judge's one-line reason
@@ -271,6 +294,7 @@ Two more returns are needed for the same reason — each is one field, and each 
    Who pays: judging is platform cost; the conversation runs on the tenant's key by construction.
 3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase C can do for free by running the same scenario repeatedly and looking at the spread of deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
+5. **Does the corpus survive the prompt migration?** The 28 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
 5. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
 
 ## 14. Risks
