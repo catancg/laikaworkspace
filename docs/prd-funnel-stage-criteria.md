@@ -34,13 +34,37 @@ Low impact in this instance, because that stage is the one the prompt tells the 
 
 ## 2. Goal
 
-Let a superadmin write the classification criteria for each funnel stage, per tenant, and have the classifier prompt be generated entirely from that.
+Let a superadmin decide, per tenant, **which stages exist, what they are called, and what each one means** — and have the classifier prompt be generated entirely from that.
 
 After this, `analyzeConversation` contains **no stage names at all**.
 
+### 2.1 Two kinds of stage
+
+Stages split into two groups, and this distinction is the centre of the design:
+
+| | Meaning | Cap |
+|---|---|---|
+| **Pipeline** (positive) | The phases of the commercial flow. A lead moving through them is progressing | **up to 5** enabled |
+| **Out** (negative) | Where leads go when they leave the flow, or never enter it | **up to 3** enabled |
+
+Today's defaults land exactly on that shape: `nuevo`, `interesado`, `cotizado`, `cerrando`, `cliente` are the five pipeline stages; `no-contesta` and `perdido` are two of the three out stages.
+
+**"Sin etapa" is not a row.** It is the absence of one — `stageId = null` — which already exists and which the classifier already returns when nothing matches. What becomes configurable is the *guidance* for it: when should the model decline to classify at all (§5.3).
+
+### 2.2 This is the concept the code has been missing
+
+`no-contesta` is seeded `isWon: false, isLost: false` — **flag-identical to every pipeline stage**. It is semantically outside the commercial flow and nothing in the data says so. Which is why `message.processor.ts` has to write:
+
+```js
+if (currentStage && (currentStage.slug === 'no-contesta' || currentStage.isLost))
+```
+
+Half semantic, half hardcoded, because the semantic half does not exist yet. **`kind` is that missing half**, and adding it collapses several of the couplings in §6 rather than merely documenting them.
+
 ## 3. Non-goals
 
-- **Not making the funnel fully configurable.** Adding, renaming and deleting stages have consequences outside this prompt (§6) that this document does not fix. §4 says what the panel must therefore refuse.
+- **Not deleting stages.** How many are in use is expressed by enabling and disabling (§4.1); real deletion needs the three designations in §6 first.
+- **Not renaming slugs.** Titles change freely; the internal identifier does not (§4).
 - **Not changing how stages are applied.** Transitions, notifications, `isWon`/`isLost` handling all stay as they are.
 - **Not a prompt editor for the whole analyst prompt.** Only the per-stage criteria and the transition policy (§5.2) become data.
 
@@ -48,29 +72,51 @@ After this, `analyzeConversation` contains **no stage names at all**.
 
 | | Editable | Why |
 |---|---|---|
-| **Criteria text** per stage | **Yes — this is the feature** | It is prompt text. Nothing else reads it |
-| `name`, `color`, `order`, `notifyOnEnter` | Yes, already | Display and notification behaviour; no code branches on them |
-| `isWon` / `isLost` | Yes, already | Semantic flags the code already reads properly |
-| **`slug`** | **No — must be locked** | ~9 sites across 4 files look stages up by slug (§6). Renaming one silently breaks followups, revenue metrics, or the revive-on-reply logic |
-| **Deleting a stage** | **No — must be blocked** | Same reason: `findFirst({ where: { slug: 'no-contesta' } })` returning null is an unhandled path |
-| **Adding a stage** | Yes, with a warning | Safe for the classifier — it appears in the list and carries its own criteria. But code that assumes a fixed set will not know about it |
+| **Criteria text** per stage | **Yes — the feature** | Prompt text. Nothing else reads it |
+| **`name`** (the title) | **Yes** | Display only. The slug is what code uses |
+| **`enabled`** | **Yes, within the caps** | How "how many they use" is expressed (§4.1) |
+| `color`, `order`, `notifyOnEnter` | Yes, already | No code branches on them |
+| `isWon` / `isLost` | Yes, already | Semantic flags the code reads properly |
+| **`kind`** | **No, once set** | Moving a stage between pipeline and out changes what every historical contact in it meant |
+| **`slug`** | **No** | **Already immutable** — `FunnelService.update()` accepts only `name`, `color`, `notifyOnEnter`, `isLost`, `isWon`. It stays that way |
+| **Deleting a stage** | **No** | `findFirst({ where: { slug } })` returning null is an unhandled path in four files (§6). Disabling is the supported route |
+
+### 4.1 Enabled, not deleted
+
+"How many categories they use" is expressed by an `enabled` flag, not by creating and destroying rows.
+
+A disabled stage does not appear in the prompt, cannot be assigned, and is hidden from the funnel board — **but the row survives**. That matters for three reasons: the nine `findFirst({ slug })` sites still find something; historical contacts keep the stage they were in, so last quarter's numbers do not change retroactively; and it is reversible.
+
+Constraints the API must enforce:
+
+- At most **5 enabled pipeline** stages and **3 enabled out** stages.
+- At least **1 enabled pipeline** stage — a funnel with none classifies nothing.
+- Disabling a stage that contacts currently sit in is allowed, but the panel says how many will be left there.
+
+**Disabling a stage the system writes to has consequences the panel must state.** Follow-ups move silent contacts to a designated out stage; disable it and follow-ups simply stop marking anyone. That is arguably correct — the business said it does not use that category — but it must be said out loud at the moment of disabling, not discovered later.
 
 **This is the part most likely to be got wrong.** Handing someone a criteria editor makes the funnel *look* fully configurable. The panel has to be explicit that slugs are fixed and stages cannot be removed, or the first person to tidy up their funnel will break revenue reporting and not find out for a month.
 
 ## 5. The prompt becomes generated
 
-### 5.1 Per-stage criteria
+### 5.1 Two blocks, built from the two kinds
 
-`FunnelStage` gains a `criteria` text field. The prompt's `Criterio:` block is built from it exactly as the stage list already is:
+`FunnelStage` gains `criteria`, `kind` and `enabled`. The prompt presents the two groups **separately**, because they mean different things to the classifier — one is progress through a flow, the other is exit from it:
 
 ```js
-const criterios = stages
-  .filter((s) => s.criteria?.trim())
-  .map((s) => `- "${s.slug}": ${s.criteria.trim()}`)
-  .join('\n');
+const enabled = stages.filter((s) => s.enabled);
+const block = (kind) => enabled
+  .filter((s) => s.kind === kind)
+  .sort((a, b) => a.order - b.order)
+  .map((s) => `- "${s.slug}" (${s.name}): ${s.criteria?.trim() || s.name}`)
+  .join(NEWLINE);
 ```
 
-A stage with no criteria still appears in the list with its name — degraded, not broken.
+rendered under two headings — *ETAPAS DEL FLUJO COMERCIAL* (pipeline, in order) and *FUERA DEL FLUJO* (out).
+
+This also replaces the current duplicate listing: today the stages appear once as a bare list and again inside the hardcoded criteria (§1). One block, one source.
+
+A stage with no criteria falls back to its name — degraded, not broken (§13).
 
 ### 5.2 The transition policy
 
@@ -86,27 +132,39 @@ EXCEPCION: "<slug of the isLost stage>" se puede marcar desde CUALQUIER etapa
 
 The global sentence becomes a tenant-level setting alongside the criteria, so a business whose funnel legitimately moves backwards can say so.
 
-### 5.3 The acceptance test
+### 5.3 "None of the above"
+
+The classifier already returns `null` when nothing matches, and `null` is what the business calls *"sin etapa"* (§2.1). But today that happens **by accident** — the model returned something unparseable, or a slug that is not in the map.
+
+Make it deliberate: a short, superadmin-editable line telling the model when to decline to classify, and an explicit way to say so in the output. A conversation that is genuinely not a lead should land in "sin etapa" *because the model said so*, not because parsing failed. Those two outcomes are indistinguishable today, and only one of them is a bug.
+
+### 5.4 The acceptance test
 
 **No stage slug or stage name may appear as a literal in `analyzeConversation` after this.** That is checkable with a grep, and it is the same acceptance test PRD 6 §4.0 sets for the eval suite: replacing every stage definition must require no code change.
 
-## 6. The coupling this exposes but does not fix
+## 6. The coupling — what `kind` fixes, and what it does not
 
-Making the criteria editable does not make the funnel configurable, because the slugs are load-bearing elsewhere. Roughly **nine sites across four files** look a stage up by slug:
+Nine sites across four files look a stage up by slug. **`kind` resolves four of them outright**, which is the argument for adding it now rather than later:
 
-| Where | What it does | What breaks if the slug changes |
+| Site | Today | With `kind` |
 |---|---|---|
-| `followup.processor.ts` | Moves a silent contact to `'no-contesta'` | Follow-ups stop moving anyone |
-| `message.processor.ts` | Revives a `'no-contesta'`/lost contact to `'interesado'` on a new message | Contacts stay dead after replying |
-| `crm.service.ts` | Revenue counts `status IN ('cotizado','cliente')`; client count on `'cliente'`; new contacts start at `'nuevo'` | **Revenue and conversion silently wrong** |
-| `ai.service.ts` | A `FALLBACK` array of five slugs | Fallback classification degrades |
+| `message.processor` — is this contact out of the flow? | `slug === 'no-contesta'` OR `isLost` | `kind === 'out'` |
+| `crm.service` — where do new contacts start? | `slug: 'nuevo'` | first enabled pipeline stage by `order` |
+| `crm.service` — client count | `status === 'cliente'` | `isWon` |
+| `ai.service` — `FALLBACK` array of five slugs | hardcoded | generated from enabled stages |
 
-Two structural notes:
+Three need a further designation, because with up to three out stages *"which one"* becomes ambiguous:
 
-- **The codebase already has the right pattern and does not use it consistently.** `isWon`/`isLost` exist and are read properly in several places. One line does both at once: `if (currentStage.slug === 'no-contesta' || currentStage.isLost)`. Half semantic, half hardcoded, same condition.
-- **`Contact.status` is a denormalized copy of the stage slug** (`data: { stageId: stage.id, status: 'interesado' }`), and the revenue query reads `status`, not the stage. So the coupling is duplicated into a second column.
+| Site | What it still needs |
+|---|---|
+| `followup.processor` — move a silent contact | **Which out stage means "stopped replying".** A designation among the out stages, the same shape as `isWon`/`isLost` |
+| `message.processor` — revive on a new reply | **Which pipeline stage a returning lead re-enters.** Currently `'interesado'`, the second stage. Could be a designation, or `previousStageId`, which already exists on `Contact` |
+| `crm.service` — revenue `status IN ('cotizado','cliente')` | Arguably should not be stage-based at all — revenue is `Sale` rows. Out of scope here, and worth its own look |
 
-Fixing this properly means semantic flags for the two remaining concepts the code needs — "the stage meaning no reply" and "the stage meaning actively engaged" — plus moving the metrics off `Contact.status`. It is a separate piece of work and §12 q1 asks whether it should happen before or after this one.
+Two structural notes that survive this PRD:
+
+- **`Contact.status` is a denormalized copy of the stage slug** (`data: { stageId: stage.id, status: 'interesado' }`), and the revenue query reads `status`, not the stage. The coupling is duplicated into a second column, and `kind` does not reach it.
+- **A stage still cannot be deleted** (§4.1), only disabled. Real deletion waits for the three designations above.
 
 ## 7. Seeding and migration
 
@@ -115,6 +173,8 @@ The seven current criteria strings become the seeded default for `criteria` on t
 Two details:
 
 - **Fix the `no contesta` / `no-contesta` mismatch while seeding** (§1.1). It is a one-character correction that can only be made once, at the moment the text becomes data.
+- **`kind` is backfilled from what the stages already mean**: the five defaults become pipeline, `no-contesta` and `perdido` become out. For a tenant that added its own stages, anything not matching a default slug defaults to **pipeline** and is flagged in the panel for confirmation — guessing "out" would silently take contacts off the board.
+- **`enabled` defaults to true** for everything that exists, so day one is unchanged.
 - **Existing tenants get the criteria backfilled by the same migration**, matched on slug. A tenant that has already renamed or added stages gets criteria for the ones that match and blanks for the rest — visible in the panel as something to fill in, which is the correct outcome.
 
 ## 8. Panel
@@ -189,19 +249,21 @@ This is also the cheapest way to tell whether an edited criterion is better: run
 
 | Phase | Scope |
 |---|---|
-| **A** | `criteria` column, seeded from the current constants, backfilled for existing tenants; prompt generated from it; the `no-contesta` fix |
+| **A** | `criteria`, `kind` and `enabled` columns, seeded and backfilled (§7); prompt generated as two blocks (§5.1); the `no-contesta` fix |
 | **B** | Superadmin-only route (§9.1) + `criteria` stripped from the admin endpoint; delete closed at the API (§9.6); validation (§9.3) |
-| **C** | Panel: edit, restore default, slug locked, delete disabled |
-| **D** | The transition policy (§5.2) as a tenant setting |
+| **C** | Panel: edit title and criteria, enable/disable within the caps, restore default, slug shown but locked, delete absent |
+| **D** | Replace the four slug lookups `kind` now covers (§6) |
+| **E** | The transition policy (§5.2) and the "none of the above" line (§5.3) as tenant settings |
 
 **A alone is worth shipping** — it changes no behaviour and removes the second source of truth, which is the actual defect. But **A must not ship without B**: the moment `criteria` exists as a column it is writable through the tenant-admin endpoint, so the role boundary has to land in the same release, not the next one.
 
 ## 12. Open questions
 
 1. **Fix the slug coupling (§6) before or after this?** After is defensible: this PRD does not make the coupling worse, and locking slugs in the panel contains it. But every day it stays, "the funnel is configurable" is half-true in a way that will eventually cost a tenant their revenue numbers.
-2. **Should criteria be per-agent as well as per-tenant?** `analyzeConversation` runs once per conversation regardless of which agent replied. Probably not, but worth naming before someone assumes it.
-3. **How long can a criteria field be?** The whole block goes into every classification call, so it is a per-conversation cost. The current seven total ~1,200 characters. A cap — or at least a visible character count — stops one enthusiastic edit from doubling the prompt.
-4. **Does the eval suite need a scenario per stage transition?** It would be the natural regression test for this feature, and it is the same corpus. Depends on PRD 6 phase A landing.
+2. **The three remaining designations (§6).** Which out stage means "stopped replying", where a revived lead re-enters, and whether revenue should move off stages entirely. Each is small; together they are what makes real deletion safe.
+3. **Should criteria be per-agent as well as per-tenant?** `analyzeConversation` runs once per conversation regardless of which agent replied. Probably not, but worth naming before someone assumes it.
+4. **How long can a criteria field be?** The whole block goes into every classification call, so it is a per-conversation cost. The current seven total ~1,200 characters. A cap — or at least a visible character count — stops one enthusiastic edit from doubling the prompt.
+5. **Does the eval suite need a scenario per stage transition?** It would be the natural regression test for this feature, and it is the same corpus. Depends on PRD 6 phase A landing.
 
 ## 13. Risks
 
