@@ -53,7 +53,7 @@ Assertions over the reply text and the turn's metadata. No judge, no cost, no va
 | Check | Why it is deterministic |
 |---|---|
 | Invented a price or discount | `faq-lint.ts` already implements this, tuned for Argentine price formats |
-| ~~WhatsApp formatting~~ | **No es medible tal como estaba escrito** — ver §4.3 |
+| ~~WhatsApp formatting~~ | **No es medible tal como estaba escrito** — ver §4.2 |
 | Leaked internal routing | Must never name an agent, `[[DERIVAR]]`, or the retrieved-knowledge markers |
 | Said "diseñador de interiores" instead of "asesor" | A named rule from the briefing |
 | Greeted twice | Second turn onward must not re-greet |
