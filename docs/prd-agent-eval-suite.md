@@ -162,9 +162,9 @@ So a production run **will** create contacts. With no separate tenant, that has 
 
 Tagging contacts (§5.2) keeps fake leads out of lists and counts. It does **not** stop everything else a conversation triggers, and one of those reaches real people:
 
-**Escalation notifies real staff.** When a turn hands off, `HandoffService.delegateToHuman` writes `Notification` rows *and* calls `push.sendToUsers` — an actual Web Push to the sales team's phones. The corpus deliberately contains escalation scenarios (§9.2), so **a nightly production run would push notifications to ITT's team about leads that do not exist, at 3am.**
+**Escalation notifies real staff.** When a turn hands off, `HandoffService.delegateToHuman` writes `Notification` rows *and* calls `push.sendToUsers` — an actual Web Push to the sales team's phones. The corpus deliberately contains escalation scenarios (§9.1), so **a nightly production run would push notifications to ITT's team about leads that do not exist, at 3am.**
 
-This is not hypothetical and not new: `crm.service.ts:592` shows `/api/test-chat` already calls `delegateToHuman` today. The suite would simply do it 28 times a night.
+This is not hypothetical and not new: `crm.service.ts:592` shows `/api/test-chat` already calls `delegateToHuman` today. The suite would simply do it once per escalation scenario, every night.
 
 Options, cheapest first:
 
@@ -174,7 +174,7 @@ Options, cheapest first:
 
 **Escalation also sets `botActive = false`.** Subsequent turns in that scenario get no reply. The runner has to treat that as a legitimate end-of-scenario, not a timeout — and a scenario whose `expects` says "should escalate by turn 3" needs no turns after 3.
 
-**Tool calls hit live data.** `searchProducts` queries the real catalog. A scenario naming a product that has since been delisted does not merely fail its expectation — the conversation takes a different path from there on. That is the `dependsOn` field in §9.1 doing its job, and it is why a corpus failure must be read as a question, not a verdict.
+**Tool calls hit live data.** `searchProducts` queries the real catalog. A scenario naming a product that has since been delisted does not merely fail its expectation — the conversation takes a different path from there on. That is the `dependsOn` field in §9.2 doing its job, and it is why a corpus failure must be read as a question, not a verdict.
 
 ## 6. The judge
 
@@ -213,7 +213,7 @@ A scenario can mix them: an ideal reply on the turn that matters, nothing on the
 
 **Judging is a per-run toggle, not a mode of the product.** Deterministic checks always run; the judge is opted into.
 
-That is not a convenience — it is what makes iteration usable. A full pass with the judge off costs **$0.04** and takes as long as the conversations do; with the judge on it is around a dollar (§13 q6). So the loop is: run with the judge off while you are still moving things, turn it on when you want an opinion worth paying for.
+That is not a convenience — it is what makes iteration usable. A full pass with the judge off costs **$0.04** and takes as long as the conversations do; with the judge on it is around a dollar (§13 q7). So the loop is: run with the judge off while you are still moving things, turn it on when you want an opinion worth paying for.
 
 It also keeps the trustworthy half available when the judge is unavailable, misconfigured, or its provider is down.
 
@@ -221,7 +221,7 @@ It also keeps the trustworthy half available when the judge is unavailable, misc
 
 **This is the part that makes the historical record worth keeping, and the part most likely to be skipped.**
 
-A score is meaningless without knowing what produced it. Three things silently rewrite history:
+A score is meaningless without knowing what produced it. Four things silently rewrite history:
 
 - **The judge model changes.** A provider deprecates one, or someone upgrades. Same reply, different number.
 - **The judge prompt or rubric changes.** Adding a criterion shifts every score.
@@ -245,13 +245,13 @@ Stored in the master database of wherever the run happened. Production runs are 
 - `EvalRun` — tenant slug, environment, corpus version, judge model, judge-prompt version, **the observed configuration snapshot** (assembled prompts per agent, rules, business profile, live chunk count, retrieval settings, models — §4.0), started/finished, cost, who or what triggered it
 - `EvalTurn` — run, scenario, repetition, turn index, **the full reply text**, `agentType`, `handToHuman`, retrieval outcome, tokens, cost, latency
 - `EvalScenario` — key, group, purpose, customer turns, optional ideal replies, `dependsOn`, who added it and when. **Editable data**, not a fixture file (§9)
-- `EvalRun` also stores **the scenarios as they were at run time** (§9.2), so a later edit cannot rewrite what a past run meant
 - `EvalCheck` — turn, check name, pass/fail, detail
 - `EvalScore` — turn, criterion, score, the judge's one-line reason
 
 Two rules:
 
 - **`EvalTurn` keeps the full reply.** Aggregates cannot be acted on, cannot be re-judged, and cannot be audited. This is the single most important storage decision here (§7.1).
+- **`EvalRun` freezes the scenarios it ran** (§9.2), text and all. Scenarios are editable data now, so a pointer would let a later edit rewrite what a past run meant.
 - **Retention is asymmetric.** Eval *contacts* in the tenant DB are purged on a short window — they are CRM clutter. Eval *records* in master are kept indefinitely — they are the history the whole feature exists for. Do not let a cleanup job confuse the two.
 
 ## 9. Corpus
@@ -262,7 +262,7 @@ The 34 existing ones are the **seed**, imported once — not the definition of t
 
 ### 9.0 How examples get in
 
-The input mechanism is deliberately open (§13 q10), but one path is worth naming because it is both the cheapest to build and the best source of examples:
+The input mechanism is deliberately open (§13 q5), but one path is worth naming because it is both the cheapest to build and the best source of examples:
 
 **Promote a real conversation.** The tenant database already holds every `Contact` and `Message`. A button on a real conversation — *"usar como ejemplo de prueba"* — copies the customer turns into a scenario. No authoring, and the examples are real customer language rather than someone's idea of it. It is also the natural response to a bad answer: the conversation that went wrong becomes the test that catches it next time.
 
@@ -270,12 +270,21 @@ Alongside that, paste-or-upload for examples written from scratch.
 
 ### 9.1 Groups
 
-**Common conversations (34, existing).** `apertura`, `venta`, `objeciones`, `cierre`, `envio`, `desordenado`, `revendedor`, `arquitecto`, `sincatalogo`… in `scripts/test-bot.js`. They move into versioned fixtures, gaining deterministic expectations. **This is the expensive part and it is already done.**
+**Common conversations (34, existing).** `apertura`, `venta`, `objeciones`, `cierre`, `envio`, `desordenado`, `revendedor`, `arquitecto`, `sincatalogo`… in `scripts/test-bot.js`. They are imported once as the seed (§9), gaining `purpose`, `expects` and `dependsOn`. **This is the expensive part and it is already done.**
 
 Two things to know before treating them as "the corpus":
 
 - **They are ITT's, not generic.** The messages say "me gusta el Nexery", "vinilo autoadhesivo", "empapelados", "almohadones". They serve the only real tenant perfectly well and cannot be reused for a customer in another trade without rewriting. That is fine; what is not fine is planning as though the corpus were portable.
-- **They are coupled to the catalog.** "Me gusta el Nexery" depends on that product existing in `Product`. Change the catalog and scenarios unrelated to the change start failing. Each scenario should declare which business data it depends on, so that failure reads as "the catalog changed" rather than "the bot got worse".
+- **They are coupled to the catalog.** "Me gusta el Nexery" depends on that product existing in `Product`. Change the catalog and scenarios unrelated to the change start failing. Each scenario declares which business data it depends on (`dependsOn`, §9.2), so that failure reads as "the catalog changed" rather than "the bot got worse".
+
+**RAG usage.** Questions with an approved answer (must fire, must be grounded); questions *near* one but uncovered (must not fire, must not invent); greetings and one-word replies (prefilter must skip, zero embedding calls); a chunk targeted at a different agent.
+
+**Edge cases.** Prompt injection in a customer message *and* in a knowledge chunk; contradictory instructions; a price the catalog does not have; abusive input; a mid-conversation language switch; empty and emoji-only messages.
+
+**Prompt adherence.** One scenario per invariant in the briefing — voseo, never inventing business data, never exposing routing, escalation criteria. (Formatting is not in this list: see §4.3.)
+
+Every scenario states **what it is for**, so a reviewer can tell when it stopped testing that. The corpus is versioned, and the version is stamped on every run (§7).
+
 
 ### 9.2 What a scenario actually is
 
@@ -291,19 +300,11 @@ Phase A's deliverable, and the document did not say what it produces. A scenario
 | `expects` | Scenario-specific expectations only (below) |
 | `dependsOn` | Business data it relies on — product names, FAQ topics. A failure here reads as "the catalog changed", not "the bot got worse" (§9) |
 
-**Universal checks are not written per scenario.** Tier-1 invariants (§4.1) run on every turn of every scenario automatically. `expects` carries only what is specific: *"retrieval should fire"*, *"should escalate by turn 3"*, *"should not name a price"*. Conflating the two would mean restating the invariants 28 times and forgetting one.
+**Universal checks are not written per scenario.** Tier-1 invariants (§4.1) run on every turn of every scenario automatically. `expects` carries only what is specific: *"retrieval should fire"*, *"should escalate by turn 3"*, *"should not name a price"*. Conflating the two would mean restating the invariants in all 34 and forgetting one.
 
 **Scenarios are editable data, so a run stores the scenarios it actually ran** — their text, not a pointer to a row someone may later edit. Same reasoning as `EvalTurn` keeping the full reply (§8): a corpus edit must not be able to rewrite the meaning of last month's numbers. `corpus_version` is then a hash of that stored set, computed rather than maintained.
 
-**The scenario cannot assume which agent answers.** The orchestrator routes per turn, so `expects` may name an agent only as an expectation to check (*"should route to soporte"*), never as a precondition. §9.2 covers what that does to aggregation.
-
-**RAG usage.** Questions with an approved answer (must fire, must be grounded); questions *near* one but uncovered (must not fire, must not invent); greetings and one-word replies (prefilter must skip, zero embedding calls); a chunk targeted at a different agent.
-
-**Edge cases.** Prompt injection in a customer message *and* in a knowledge chunk; contradictory instructions; a price the catalog does not have; abusive input; a mid-conversation language switch; empty and emoji-only messages.
-
-**Prompt adherence.** One scenario per invariant in the briefing — voseo, never inventing business data, never exposing routing, escalation criteria. (Formatting is not in this list: see §4.3.)
-
-Every scenario states **what it is for**, so a reviewer can tell when it stopped testing that. The corpus is versioned, and the version is stamped on every run (§7).
+**The scenario cannot assume which agent answers.** The orchestrator routes per turn, so `expects` may name an agent only as an expectation to check (*"should route to soporte"*), never as a precondition. §13 q8 covers what that does to aggregation.
 
 ## 10. Instrumentation needed
 
@@ -321,7 +322,7 @@ Two more returns are needed for the same reason — each is one field, and each 
 ## 11. Metrics
 
 - **Deterministic pass rate per check.** The trustworthy trend line (§4.1).
-- **Mean score per rubric criterion**, always displayed with its judge model / prompt version / corpus version, and never drawn across a boundary (§7).
+- **Mean score per rubric criterion**, always displayed with its judge model, judge-prompt version, corpus version **and configuration fingerprint**, and never drawn across a boundary (§7).
 - **Judge–human agreement** on the labelled set (§6.4).
 - **Retrieval precision on scenarios that should fire** — fired-and-correct vs fired-and-wrong. The number PRD 5 §8 wanted and could not produce.
 - **Cost and latency per run.**
@@ -341,7 +342,7 @@ Two more returns are needed for the same reason — each is one field, and each 
 
 **C is small and non-negotiable.** Three optional fields on an existing return value. An earlier draft had it *after* the judge, which would have meant building compliance judging with no rulebook to judge against.
 
-**E is where the feature becomes real for the business.** An earlier draft put the panel last; that was wrong, because it would leave the people who make these changes waiting behind six phases of tooling built for someone else.
+**F is where the feature becomes real for the business.** An earlier draft put the panel last on purpose; that was wrong, because it would leave the people who make these changes waiting behind five phases of tooling built for someone else.
 
 ## 13. Open questions
 
