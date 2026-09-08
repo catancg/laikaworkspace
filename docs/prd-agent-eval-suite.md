@@ -299,7 +299,7 @@ Two more returns are needed for the same reason — each is one field, and each 
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Fixtures: move the 28 scenarios out of `test-bot.js`, add tier-1 expectations and their data dependencies | The corpus exists; this makes it addressable. No new infrastructure |
+| **A** | Fixtures: move the 34 scenarios out of `test-bot.js`, add tier-1 expectations and their data dependencies | The corpus exists; this makes it addressable. No new infrastructure |
 | **B** | Engine + tier-1 deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost, and measures its own variance for free (§13 q3) |
 | **C** | Three returns from `chat()`: assembled system prompt, `RetrievalOutcome`, raw model output (§10) | **Prerequisite for the judge**, not a follow-up. Without the assembled prompt there is no compliance judging (§4.2.1) — only vague quality scoring |
 | **D** | Judge: compliance against the real prompt, quality criteria, version stamping (§7), the labelled agreement set (§6.4) | The interpretation layer. Built on B and C rather than instead of them |
@@ -333,7 +333,7 @@ Two more returns are needed for the same reason — each is one field, and each 
    Who pays: judging is platform cost; the conversation runs on the tenant's key by construction.
 3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase B can do for free by running the same scenario repeatedly and looking at the spread of its deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
-5. **Does the corpus survive the prompt migration?** The 28 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
+5. **Does the corpus survive the prompt migration?** The 34 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
 6. ~~**The judge's cost.**~~ **Measured, not estimated.** §4.2.1 requires sending the *assembled* system prompt with every judgement, so the rulebook size drives everything.
 
    Measured inputs, all from the local tenant and `scripts/test-bot.js`:
