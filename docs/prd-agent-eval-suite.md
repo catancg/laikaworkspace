@@ -238,7 +238,7 @@ Two rules:
 
 Four groups. The first already exists.
 
-**Common conversations (28, existing).** `apertura`, `venta`, `objeciones`, `cierre`, `envio`, `desordenado`, `revendedor`, `arquitecto`, `sincatalogo`… in `scripts/test-bot.js`. They move into versioned fixtures, gaining deterministic expectations. **This is the expensive part and it is already done.**
+**Common conversations (34, existing).** `apertura`, `venta`, `objeciones`, `cierre`, `envio`, `desordenado`, `revendedor`, `arquitecto`, `sincatalogo`… in `scripts/test-bot.js`. They move into versioned fixtures, gaining deterministic expectations. **This is the expensive part and it is already done.**
 
 Two things to know before treating them as "the corpus":
 
@@ -314,7 +314,7 @@ Two more returns are needed for the same reason — each is one field, and each 
 
 ## 13. Open questions
 
-1. **How often does production run?** The *conversation* half is settled and cheap (question 2). The *judge* half is not (question 6) and is the one that decides this. Tier-1-only runs are free and could be nightly today; judged runs need question 6 answered first.
+1. **How often does production run?** Tier-1-only runs cost $0.13 and could be nightly today. Judged runs are ~$1.60 (question 6), so nightly judging is ~$50/month — affordable, but worth deciding deliberately rather than defaulting to it. A plausible split: tier-1 nightly, judged weekly and on demand after a prompt change.
 2. ~~**Cost per run.**~~ **Measured, from `AiUsage` in the local environment.** A turn is **three** model calls, not two — there is a `classifier` alongside the orchestrator and the agent:
 
    | kind | average cost |
@@ -324,7 +324,7 @@ Two more returns are needed for the same reason — each is one field, and each 
    | `agent` | $0.000214 |
    | `faq_query` (embedding) | ~$0.000000 |
 
-   ≈ **$0.0005 per turn**. A full run (28 scenarios × ~4 turns × N=3) is ~336 turns: **~$0.17 without the judge**, and with a more expensive judge per turn, on the order of **$0.50 total**.
+   ≈ **$0.0005 per turn**. A full run is **34 scenarios, 87 customer turns, ×N=3 = 261 turns**: **$0.13 without the judge**.
 
    Cents, not dollars — **for the conversation**. The judge is a different story, see question 6.
 
@@ -334,16 +334,36 @@ Two more returns are needed for the same reason — each is one field, and each 
 3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase B can do for free by running the same scenario repeatedly and looking at the spread of its deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
 5. **Does the corpus survive the prompt migration?** The 28 scenarios were authored against the prompts in the local environment, which differ substantially from production's and are about to be replaced. The scenarios themselves should transfer — they are customer messages, not expectations about wording — but any expectation attached to them may not. Re-validate the corpus against production once the migration lands, and treat a wave of failures then as "the corpus was over-fitted", not "the bot got worse".
-6. **The judge's cost was understated, because the rulebook is large.** §4.2.1 requires sending the *assembled* system prompt with every judgement. ITT's `ventas` prompt alone is 7,497 characters; with `GUARDRAILS`, `CONVERSACION`, rules, business profile and stages the assembled string is plausibly ~15k characters ≈ **4–5k tokens per judge call**.
+6. ~~**The judge's cost.**~~ **Measured, not estimated.** §4.2.1 requires sending the *assembled* system prompt with every judgement, so the rulebook size drives everything.
 
-   At 336 turns that is ~1.7M input tokens per run. On a judge-grade model at roughly $3/M input, **~$5 per run, not $0.50** — and nightly becomes **~$150/month, not $15**. An order of magnitude, and it lands entirely on the platform key.
+   Measured inputs, all from the local tenant and `scripts/test-bot.js`:
 
-   Two mitigations, both worth taking before setting a cadence:
+   | | |
+   |---|---|
+   | `GUARDRAILS` + `CONVERSACION` (code) | 1,448 + 1,220 chars |
+   | `Agent.prompt` for `ventas` | 7,497 chars |
+   | **Assembled prompt** | **~10,465 chars ≈ 2,830 tokens** |
+   | Corpus | **34 scenarios, 87 customer turns**, average 2.6 per scenario |
+   | Turns per run at N=3 | **261** |
 
-   - **Judge per scenario, not per turn.** One call carrying the rulebook plus the whole conversation, instead of four carrying it four times. Cuts the dominant cost ~4x and is arguably better judging — compliance with *"un paso a la vez"* or *"no repitas el saludo"* is a property of the conversation, not of a turn.
-   - **Prompt caching**, where the provider supports it. The rulebook is identical across every judgement in a run.
+   Judge input per run, and cost at several judge-model price points (input tokens):
 
-   Until this is measured for real, the nightly cadence in question 1 is not settled. **The tier-1 checks stay free either way**, which is another reason phase B is worth having before phase D.
+   | $/M input | judging per turn | judging per scenario |
+   |---|---|---|
+   | $0.15 | $0.21 | $0.08 |
+   | $0.60 | $0.84 | $0.31 |
+   | $3.00 | **$4.20** | **$1.57** |
+   | $15.00 | $21.01 | $7.83 |
+
+   1.40M input tokens per turn-judged run against 0.52M per scenario-judged one — **a 2.7x saving**, not the 4x an earlier draft claimed, because scenarios average 2.6 turns rather than four.
+
+   The conversation itself is **$0.13** per run (261 turns × $0.0005), so **the judge is 90%+ of the bill** at any serious judge model.
+
+   **Judge per scenario, not per turn.** Cheaper, and arguably better judging: compliance with *"un paso a la vez"* or *"no repitas el saludo"* is a property of the conversation, not of a turn. Add prompt caching where the provider supports it — the rulebook is identical across every judgement in a run.
+
+   **Two caveats that push the real number up.** The local tenant has an **empty `BusinessProfile` and zero `BotRule` rows**; production has both, and they are injected into every prompt. And the production prompts are larger and about to be replaced (§4.0). Treat ~2,830 tokens as a **floor** — 1.5–2x is plausible, and the per-turn penalty scales with it while the per-scenario one barely moves.
+
+   At a mid-priced judge, scenario-level: **~$1.60 per run, ~$50/month nightly.** Affordable, but not free the way the tier-1 checks are — which is another reason phase B stands on its own.
 
 7. **Does the orchestrator's routing break aggregation?** The orchestrator picks the agent per turn, non-deterministically. Across N repetitions the same scenario can route to `ventas` once and `soporte` twice — so compliance is judged against **different rulebooks** in the same aggregate. Options: aggregate per (scenario, agent) pair, treat a routing change as its own finding, or both. Needs the variance data from phase B before deciding.
 
