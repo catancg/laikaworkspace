@@ -53,7 +53,7 @@ Assertions over the reply text and the turn's metadata. No judge, no cost, no va
 | Check | Why it is deterministic |
 |---|---|
 | Invented a price or discount | `faq-lint.ts` already implements this, tuned for Argentine price formats |
-| ~~WhatsApp formatting~~ | **No es medible tal como estaba escrito** — ver §4.2 |
+| ~~WhatsApp formatting~~ | **Not measurable as specified** — see §4.2 |
 | Leaked internal routing | Must never name an agent, `[[DERIVAR]]`, or the retrieved-knowledge markers |
 | Said "diseñador de interiores" instead of "asesor" | A named rule from the briefing |
 | Greeted twice | Second turn onward must not re-greet |
@@ -63,21 +63,23 @@ Assertions over the reply text and the turn's metadata. No judge, no cost, no va
 
 **These are also the only metric in this document that is trustworthy across months.** A pass rate is absolute, stable, and unaffected by which model is judging — which is precisely what §7 shows the judge scores are not. If only half of this PRD gets built, build this half.
 
-### 4.2 El chequeo de formato que no se puede hacer
+### 4.2 The formatting check that cannot be done
 
-`normalizeWhatsappText` es privado en `AiService` **y corre sobre la respuesta antes de devolverla**: convierte `**markdown**` en `*bold*`, saca `[texto](url)`, arregla las viñetas. Para cuando el runner ve `reply`, la violación ya fue reparada.
+`normalizeWhatsappText` is private in `AiService` **and runs on the reply before it is returned**: it converts `**markdown**` to `*bold*`, strips `[text](url)`, fixes bullets. By the time the runner sees `reply`, the violation has already been repaired.
 
-O sea que un chequeo de formato sobre la respuesta devuelta **siempre pasa**. No porque el bot se porte bien: porque está mirando después de la limpieza. Es exactamente el tipo de test verde que no discrimina nada, y estaba especificado en la versión anterior de este documento.
+So a formatting check over the returned reply **always passes** — not because the bot behaves, but because it is looking after the cleanup. It is exactly the kind of green test that discriminates nothing, and it was specified in an earlier version of this document.
 
-Lo que sí es medible, y además es mejor señal: **con qué frecuencia el normalizador tuvo que intervenir.** Un prompt que produce markdown en el 40% de los turnos es un prompt con un problema, aunque el usuario final nunca lo vea. Requiere exponer la salida cruda del modelo junto a la normalizada — un campo más, del mismo tamaño que el hallazgo de §10.
+What *is* measurable, and is better signal: **how often the normalizer had to intervene.** A prompt producing markdown on 40% of turns has a problem, even though the customer never sees it. That needs the raw model output exposed alongside the normalized one — one more field, the same size as the finding in §10.
 
-Hasta que eso exista, este chequeo no va. Un chequeo que no puede fallar es peor que ninguno.
+Until that exists, this check is out. A check that cannot fail is worse than no check.
 
 ### 4.3 Judged scores — for what needs reading
 
 What survives §4.1 requires judgment: did it understand the customer, was the answer useful, did it advance the sale, was escalating right. Those get an LLM score (§6).
 
 ## 5. Running it
+
+> **Editing and reverting the configuration under test is [PRD 7](prd-agent-config-versioning.md), not this document.** This one runs the suite and records what happened; that one owns how a change is made and undone. They meet in one workflow — save, evaluate, keep or revert — and PRD 7 §4 describes it.
 
 ### 5.1 One engine, two front doors
 
@@ -88,27 +90,7 @@ The same engine, pointed at a tenant by slug, reachable two ways:
 
 Same code, same scenarios, same storage shape. If the two diverge, runs stop being comparable and the historical record is worthless.
 
-### 5.2 Prompt history, and the undo that makes evaluation safe
-
-`Agent` has a single `prompt` column. `AgentsService.update()` overwrites it in place: **no draft, no version history, no previous value.** A superadmin edits the `ventas` prompt, it is live on the next customer message, and the text that was there before is gone.
-
-That is a problem on its own, and it is a prerequisite here: an evaluation that says "this got worse" is not much use if there is nothing to go back to.
-
-**Requirement: every save archives the previous version.** A row per revision — agent, prompt text, who saved it, when, and the id of the eval run that was active at the time if there is one. The panel gets "volver a la versión anterior", which restores the text and invalidates the agent cache (`invalidateAgentCache` already exists for this).
-
-This is small, independent of everything else in this document, and worth building first (§12 phase A). It is also the only part of this PRD that reduces risk *before* any measurement exists.
-
-### 5.3 The change is live while it is being evaluated
-
-The chosen workflow is: **save → evaluate → keep or revert.** The prompt is in production for the duration of the run, so real customers can receive the version being tested.
-
-This is a deliberate trade, taken to avoid threading prompt overrides through `AiService`'s prompt assembly — the hottest path in the product. It is stated here rather than buried because it is a real cost:
-
-- **Bound the exposure.** A "quick check" mode — deterministic checks only, a subset of scenarios, no judge — runs in a fraction of the time and catches the categorical failures (invented price, broken escalation, leaked routing). Offer that as the default after a prompt edit, with the full judged run as a deliberate second step.
-- **Make reverting one click**, per §5.2. Recovery time matters more than prevention here, because prevention was the thing we chose not to pay for.
-- If this trade ever proves wrong — a bad prompt reaches enough customers to matter — the answer is the override path, and that is when to pay for it.
-
-### 5.4 Running against production creates conversations
+### 5.2 Running against production creates conversations
 
 `AiService.chat()` takes a `contactId` and reads history from the database — it cannot be called with a bare message list. That is why `/api/test-chat` persists `Contact` and `Message` rows, deliberately ("deja la conversación en /conversations como un lead real").
 
@@ -187,10 +169,10 @@ Four groups. The first already exists.
 
 **Common conversations (28, existing).** `apertura`, `venta`, `objeciones`, `cierre`, `envio`, `desordenado`, `revendedor`, `arquitecto`, `sincatalogo`… in `scripts/test-bot.js`. They move into versioned fixtures, gaining deterministic expectations. **This is the expensive part and it is already done.**
 
-Dos cosas que hay que saber de ellas antes de tratarlas como "el corpus":
+Two things to know before treating them as "the corpus":
 
-- **Son de ITT, no genéricas.** Los mensajes dicen "me gusta el Nexery", "vinilo autoadhesivo", "empapelados", "almohadones". Sirven perfectamente para el único tenant real que hay, y no se pueden reutilizar para un cliente de otro rubro sin reescribirlas. Eso está bien; lo que no está bien es planificar como si el corpus fuera portable.
-- **Están acopladas al catálogo.** "Me gusta el Nexery" depende de que ese producto exista en `Product`. Si el catálogo cambia, escenarios que no tienen nada que ver con el cambio empiezan a fallar. Cada escenario debería declarar de qué datos del negocio depende, para que ese fallo se lea como "cambió el catálogo" y no como "empeoró el bot".
+- **They are ITT's, not generic.** The messages say "me gusta el Nexery", "vinilo autoadhesivo", "empapelados", "almohadones". They serve the only real tenant perfectly well and cannot be reused for a customer in another trade without rewriting. That is fine; what is not fine is planning as though the corpus were portable.
+- **They are coupled to the catalog.** "Me gusta el Nexery" depends on that product existing in `Product`. Change the catalog and scenarios unrelated to the change start failing. Each scenario should declare which business data it depends on, so that failure reads as "the catalog changed" rather than "the bot got worse".
 
 **RAG usage.** Questions with an approved answer (must fire, must be grounded); questions *near* one but uncovered (must not fire, must not invent); greetings and one-word replies (prefilter must skip, zero embedding calls); a chunk targeted at a different agent.
 
@@ -220,22 +202,21 @@ One change, and every RAG measurement depends on it.
 
 | Phase | Scope | Why in this order |
 |---|---|---|
-| **A** | Prompt history + "volver a la versión anterior" in the panel (§5.2) | Independent of everything else, and the only phase that reduces risk before any measurement exists. Today a bad prompt edit is unrecoverable |
-| **B** | Fixtures: move the 28 scenarios out of `test-bot.js`, add deterministic expectations | The corpus exists; this makes it addressable. No new infrastructure |
-| **C** | Engine + deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost |
+| **A** | Fixtures: move the 28 scenarios out of `test-bot.js`, add deterministic expectations and their data dependencies | The corpus exists; this makes it addressable. No new infrastructure |
+| **B** | Engine + deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost, and measures its own variance for free (§13 q3) |
+| **C** | Judge: rubric, scores, version stamping (§7), the labelled agreement set (§6.4) | The interpretation layer. Built on B rather than instead of it — the deterministic pass rate is what tells you whether the judge is worth believing |
 | **D** | `source: 'eval'` tagging and CRM filtering | Must land **before** the panel: the panel runs against production, and without this it fills the customer's CRM with fake leads |
-| **E** | Panel: run, quick-check mode, results, run history, revert | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
-| **F** | `RetrievalOutcome` surfaced from `chat()` (§10) | Unblocks RAG-behaviour measurement |
-| **G** | Judge: rubric, scores, versioning, the labelled agreement set | The soft signal, built only once the solid one works |
+| **E** | Panel: run, quick-check mode, results, run history | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
+| **F** | `RetrievalOutcome` surfaced from `chat()` (§10), and raw model output for §4.2 | Two small returns that unblock the RAG and formatting measurements |
 
-**A is worth doing this week regardless of the rest.** It is a table and a button, and it turns "we overwrote the prompt and can't get it back" from a live risk into a non-event.
+**B is useful on its own**, before any judge exists: it already catches an invented price, a broken escalation or a leaked routing marker, at zero cost per run.
 
-**E is where the feature becomes real for the business.** An earlier draft of this plan put the panel last; that was wrong, because it would have left the people who make these changes waiting for six phases of tooling built for someone else.
+**E is where the feature becomes real for the business.** An earlier draft put the panel last; that was wrong, because it would leave the people who make these changes waiting behind six phases of tooling built for someone else.
 
 ## 13. Open questions
 
-1. **How often does production run?** Con el costo ya medido (pregunta 2), nocturno es viable: ~$15/mes. Queda como decisión de producto, no de presupuesto.
-2. ~~**Cost per run.**~~ **Medido, de `AiUsage` en el entorno local.** Un turno son **tres** llamadas al modelo, no dos — hay un `classifier` además del orquestador y el agente:
+1. **How often does production run?** With the cost measured (question 2), nightly is affordable at roughly $15/month. It is a product decision now, not a budget one.
+2. ~~**Cost per run.**~~ **Measured, from `AiUsage` in the local environment.** A turn is **three** model calls, not two — there is a `classifier` alongside the orchestrator and the agent:
 
    | kind | costo promedio |
    |---|---|
@@ -244,13 +225,13 @@ One change, and every RAG measurement depends on it.
    | `agent` | $0.000214 |
    | `faq_query` (embedding) | ~$0.000000 |
 
-   ≈ **$0.0005 por turno**. Una corrida completa (28 escenarios × ~4 turnos × N=3) son ~336 turnos: **~$0.17 sin juez**, y con un juez más caro por turno del orden de **$0.50 total**.
+   ≈ **$0.0005 per turn**. A full run (28 scenarios × ~4 turns × N=3) is ~336 turns: **~$0.17 without the judge**, and with a more expensive judge per turn, on the order of **$0.50 total**.
 
-   Son centavos, no dólares. Eso resuelve la pregunta 1: correrlo todas las noches cuesta unos **$15 al mes**, y el costo deja de ser una razón para no medir seguido.
+   Cents, not dollars. That answers question 1: running it nightly costs about **$15 a month**, and cost stops being a reason to measure infrequently.
 
-   **Salvedad:** el número sale de `tenant-dev`, que puede usar modelos más baratos que ITT en producción. Antes de fijar la cadencia conviene recalcularlo con la misma consulta contra el `AiUsage` de producción. El orden de magnitud —centavos por corrida— difícilmente cambie.
+   **Caveat:** the number comes from `tenant-dev`, which may use cheaper models than ITT in production. Re-run the same query against production's `AiUsage` before fixing a cadence. The order of magnitude — cents per run — is unlikely to move.
 
-   Quién paga: el juicio es costo de plataforma; la conversación corre con la key del tenant por construcción.
+   Who pays: judging is platform cost; the conversation runs on the tenant's key by construction.
 3. **How many repetitions?** The system is non-deterministic; a single run of a scenario is one sample. N=3 is a guess until the variance is measured — which phase C can do for free by running the same scenario repeatedly and looking at the spread of deterministic results.
 4. **Retention for eval contacts** in the tenant database (§8). Days, probably.
 5. **Per-tenant retrieval settings.** `FAQ_RETRIEVAL_THRESHOLD`, `TOP_K`, `MAX_ANSWER_CHARS` and `EMBED_TIMEOUT_MS` are read once in `FaqRetrievalService`'s constructor and apply **process-wide**. Testing a different threshold therefore requires a separate deployment, even locally. The code's own comment says the intent was "retocarlo por tenant/vertical sin deploy". Four nullable columns on `Tenant` with env fallback would fix it — small, and it unlocks experimenting on what PRD 1 calls "el dial mas importante".
