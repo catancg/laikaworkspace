@@ -65,6 +65,8 @@ Only two things may be hardcoded, and both are **imported from the code, never r
 
 **The configuration it observed is stamped on the run** and becomes a fourth axis of comparability alongside judge model, judge prompt and corpus version (§7). Without it, a score is a number with no idea what rules produced it.
 
+**It has to be decomposable, not one hash.** Per agent prompt, per rule, per business field, per catalog and knowledge-base state — because §6.5.1 needs to answer "did *shipping* change?", not merely "did anything change?". A single opaque digest would flag every ideal reply on every run, which is no signal at all.
+
 ### 4.0.1 The dividing line between the two tiers
 
 > **Is the rule itself a constant in our code, or is it data the tenant can change?**
@@ -166,11 +168,11 @@ Tagging contacts (§5.2) keeps fake leads out of lists and counts. It does **not
 
 This is not hypothetical and not new: `crm.service.ts:592` shows `/api/test-chat` already calls `delegateToHuman` today. The suite would simply do it once per escalation scenario, every night.
 
-Options, cheapest first:
+**Decision: suppress notifications for eval contacts.** `delegateToHuman` already receives the contact; it skips the `Notification` write and the push when `source = 'eval'`.
 
-- **Suppress notifications for eval contacts.** `delegateToHuman` already receives the contact; skipping the notification and push when `source = 'eval'` is a guard in one place. Loses the ability to check that escalation *notified*, which is worth little compared to not paging people.
-- **Exclude escalation scenarios from scheduled runs**, keep them for on-demand ones. Cheap, and gives up the coverage that matters most.
-- Suppress by default and let the on-demand panel run opt in.
+The escalation still happens and `handToHuman` still comes back, so *"did it escalate when it should?"* — the coverage that matters — is untouched. The only thing given up is verifying that the notification itself goes out, which is worth little next to not paging people about leads that do not exist.
+
+It belongs to **phase E**, since it keys off the same `source = 'eval'` tag, and it fixes the existing `/api/test-chat` behaviour as a side effect.
 
 **Escalation also sets `botActive = false`.** Subsequent turns in that scenario get no reply. The runner has to treat that as a legitimate end-of-scenario, not a timeout — and a scenario whose `expects` says "should escalate by turn 3" needs no turns after 3.
 
@@ -208,6 +210,17 @@ Keep ~20 turns with a **human score recorded**. Whenever the judge model or prom
 Reference mode is the **stronger** signal: it is the only thing here that catches a reply which follows every rule and is still wrong about the business. It is also **cheaper**, because it does not need the ~2,830-token rulebook — the ideal answer *is* the standard. The cost moved from tokens to human authoring, which is why it is optional and per-turn.
 
 A scenario can mix them: an ideal reply on the turn that matters, nothing on the rest.
+
+#### 6.5.1 An ideal reply that has gone stale is worse than none
+
+If the business changes its shipping policy, every ideal reply that mentions shipping is now wrong — and the judge will confidently report a **correct** answer as a regression. That is worse than having no reference at all, because it is a false alarm delivered with authority.
+
+**When the configuration fingerprint changes (§4.0), every ideal reply whose `dependsOn` overlaps what changed is flagged `needs-review`.** It keeps being used — silently dropping it would quietly reduce coverage — but any finding it produces is labelled *"the reference may be out of date"*, so a false alarm reads as one.
+
+This makes two things load-bearing that were previously conveniences:
+
+- **`dependsOn` is required on any turn carrying an ideal reply** (§9.2). Without it there is nothing to overlap against and the flagging cannot fire.
+- **The configuration fingerprint has to say *what* changed**, not just that something did (§4.0). A single opaque hash would flag every reference on every run, which is the same as flagging none.
 
 ### 6.6 The judge has an off switch
 
@@ -298,7 +311,7 @@ Phase A's deliverable, and the document did not say what it produces. A scenario
 | `messages[]` | The customer's turns, in order |
 | `messages[].idealReply` | **Optional.** What the bot *should* have said on that turn. Where present the judge compares against it (§6.5); where absent it judges against the assembled prompt |
 | `expects` | Scenario-specific expectations only (below) |
-| `dependsOn` | Business data it relies on — product names, FAQ topics. A failure here reads as "the catalog changed", not "the bot got worse" (§9) |
+| `dependsOn` | Business data it relies on — product names, FAQ topics, policies. A failure here reads as "the catalog changed", not "the bot got worse" (§9). **Required on any turn with an ideal reply** (§6.5.1) |
 
 **Universal checks are not written per scenario.** Tier-1 invariants (§4.1) run on every turn of every scenario automatically. `expects` carries only what is specific: *"retrieval should fire"*, *"should escalate by turn 3"*, *"should not name a price"*. Conflating the two would mean restating the invariants in all 34 and forgetting one.
 
@@ -327,6 +340,17 @@ Two more returns are needed for the same reason — each is one field, and each 
 - **Retrieval precision on scenarios that should fire** — fired-and-correct vs fired-and-wrong. The number PRD 5 §8 wanted and could not produce.
 - **Cost and latency per run.**
 
+### 11.1 Corpus health
+
+The corpus is now data anyone can add to (§9), so its quality is a variable rather than a given. **No approval gate** — a queue would discourage exactly the behaviour we want — but the suite reports on itself:
+
+- **Scenarios that have never failed, ever.** A scenario that has been green for six months is either genuinely settled or measuring nothing, and the two are indistinguishable until someone looks. This is the corpus equivalent of a test that cannot fail (§4.3).
+- **Share of scenarios with at least one ideal reply**, and how many are flagged `needs-review` (§6.5.1).
+- **Scenarios not touched in N months**, against a business that has moved on.
+- **Coverage by group** — a corpus that is 34 sales conversations and two edge cases says so.
+
+None of these gates anything. They exist so that "the suite is green" can be read alongside "and here is how much that is worth".
+
 ## 12. Phasing
 
 | Phase | Scope | Why in this order |
@@ -335,12 +359,12 @@ Two more returns are needed for the same reason — each is one field, and each 
 | **B** | Engine + tier-1 deterministic checks + `EvalRun`/`EvalTurn`/`EvalCheck` storage; CLI front door | The measurement core. Runs locally, zero judge cost, and measures its own variance for free (§13 q3) |
 | **C** | Three returns from `chat()`: assembled system prompt, `RetrievalOutcome`, raw model output (§10) | **Prerequisite for the judge**, not a follow-up. Without the assembled prompt there is no compliance judging (§4.2.1) — only vague quality scoring |
 | **D** | Judge: compliance against the real prompt, quality criteria, version stamping (§7), the labelled agreement set (§6.4) | The interpretation layer. Built on B and C rather than instead of them |
-| **E** | `source: 'eval'` tagging and CRM filtering | Must land **before** the panel: the panel runs against production, and without this it fills the customer's CRM with fake leads |
-| **F** | Panel: manage examples, run with the judge on or off (§6.6), results, run history | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
+| **E** | `source: 'eval'` tagging, CRM filtering, and the notification guard in `delegateToHuman` (§5.3) | Must land **before** the panel: without the tag the panel fills the customer's CRM with fake leads, and without the guard it pushes to their phones |
+| **F** | Panel: manage examples, run with the judge on or off (§6.6), results, run history, corpus health (§11.1) | **The phase that serves the actual user** (§2.1). Everything before it is plumbing for engineers |
 
 **B is useful on its own**, before any judge exists: it already catches an invented price, a broken escalation or a leaked routing marker, at zero cost per run — those are the tier-1 invariants, and they need no prompt to verify.
 
-**C is small and non-negotiable.** Three optional fields on an existing return value. An earlier draft had it *after* the judge, which would have meant building compliance judging with no rulebook to judge against.
+**Phase C is small and non-negotiable.** Three optional fields on an existing return value. An earlier draft had it *after* the judge, which would have meant building compliance judging with no rulebook to judge against.
 
 **F is where the feature becomes real for the business.** An earlier draft put the panel last on purpose; that was wrong, because it would leave the people who make these changes waiting behind five phases of tooling built for someone else.
 
@@ -409,4 +433,6 @@ Two more returns are needed for the same reason — each is one field, and each 
 - **Optimising for the judge** rather than for customers. The deterministic checks and real transcripts are the counterweight.
 - **Eval contacts leak into business metrics.** One missed call site and the customer's lead count is wrong. The filter needs a test, not just a code review.
 - **A bad prompt reaches customers while it is being evaluated.** Owned by [PRD 7 §4](prd-agent-config-versioning.md), since it arises from the save-then-evaluate workflow rather than from running the suite.
-- **Cost surprises.** Bounded by phase C being free and by estimating before every judged run.
+- **A stale ideal reply produces a confident false alarm** (§6.5.1). The failure that wastes the most trust, because it looks exactly like a real regression. Defended by `dependsOn` plus a decomposable configuration fingerprint — and it only works if `dependsOn` is actually filled in.
+- **The corpus goes green and stays green.** Examples that never fail measure nothing, and nobody notices because the dashboard looks healthy. §11.1 makes it visible instead of gating it.
+- **Cost surprises.** Bounded by tier-1 runs being nearly free ($0.04) and by estimating before every judged run.
