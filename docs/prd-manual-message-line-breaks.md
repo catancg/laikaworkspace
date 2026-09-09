@@ -196,7 +196,46 @@ optional: every item below is a behaviour that a plausible implementation gets w
 | The grown box eats the conversation view on a short screen | Hard ceiling at ~6 rows; checklist item 5. |
 | Height not reset after send | §4.3; checklist item 4. |
 
-## 9. Decisions taken
+## 9. Two defects found while verifying this, fixed alongside it
+
+Neither is about line breaks. Both surfaced because §7 was actually walked in a browser, and
+both live in the same send path, so they are recorded here rather than lost.
+
+The local dev tenant's contacts have `demo-*` placeholders instead of phone numbers, so every
+manual send fails at the Graph API. That accident is what exposed them.
+
+### 9.1 A failed send left the composer dead (frontend)
+
+`handleSend` had no `try/catch`. On a failed request the `await` threw, `setSending(false)` never
+ran, and `disabled={botActive || sending}` left the box disabled **until the page was reloaded**.
+The seller had also already lost their text, because `setMessage("")` runs before the request.
+
+Fixed in the same commit range as this PRD: `finally` always re-enables, the text goes back into
+the box (height re-adjusted on the next frame, once the DOM actually holds it), and the reason
+appears in a `toast.error` — the pattern ~10 other screens already use.
+
+### 9.2 The CRM showed a bubble for a message the customer never got (backend)
+
+`WhatsappService.sendManual` wrote the `Message` row **before** calling Graph. When the send
+failed, the row stayed. The conversation showed the seller's message as if it had been
+delivered — the most expensive kind of wrong, because the seller stops thinking about it.
+
+Fixed by sending first and persisting only on success. Considered and rejected for now: a
+`Message.status` column with failed-bubble rendering and retry. It is the more honest design,
+but it costs a hand-written SQL migration applied to **every tenant database at boot**, plus UI
+work — PRD-sized, not a patch. If delivery states are wanted, that is the next PRD.
+
+The same failure also reached the CRM as `"Internal server error"`, which tells a seller
+nothing. `sendManual` now throws a 502 carrying Meta's own reason ("Invalid OAuth access
+token…"), which a seller or admin can act on. This is an internal panel, so the upstream reason
+is useful rather than a leak.
+
+**Note the ordering fix is narrow on purpose.** Writing before sending is the pattern *everywhere*
+in this codebase — `message.processor.ts`, `followup.processor.ts`, `bulk.processor.ts` all do
+it. Only the manual path was changed, because it is the one where a human is watching the thread
+and drawing a conclusion from what they see. The bot paths deserve their own look, separately.
+
+## 10. Decisions taken
 
 - Enter sends, Shift+Enter breaks the line (§3) — chosen over Ctrl+Enter-to-send.
 - Mobile line breaks are out of scope, with the touch branch recorded as the remedy (§5).
