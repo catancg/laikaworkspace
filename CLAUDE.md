@@ -50,8 +50,8 @@ at runtime.
 - **`docs/prd-*.md`** — one file per feature, each titled `PRD N` in its heading. Current set,
   in numbering order: RAG knowledge layer (1), FAQ content ingestion (2), FAQ admin UI (3),
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
-  versioning (7), funnel stage criteria (8). PRDs 1–5 are implemented and in production;
-  6–8 are proposed.
+  versioning (7), funnel stage criteria (8), manual message line breaks (9). PRDs 1–5 are
+  implemented and in production; 6–7 and 9 are proposed; 8 is implemented.
 - **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
   written from a PRD before execution. See `docs/plans/README.md`.
 
