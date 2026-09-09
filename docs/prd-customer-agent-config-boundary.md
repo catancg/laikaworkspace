@@ -267,10 +267,12 @@ is a visibly broken screen.
 
 ## 7. Accepted risks and out of scope
 
-**Accepted:** by §2.4, every tenant's existing `BotRule` rows stay live and unreviewed after cutover.
-Those rows are exactly the content this requirement was written about — they were authored by
-customers with no gate. The requirement is satisfied going forward, not retroactively. Closing this
-means a one-time review pass over existing rules per tenant, which this PRD does not schedule.
+**Decided, not merely accepted:** by §2.4, every tenant's existing `BotRule` rows stay live and
+unreviewed after cutover. Those rows were authored by customers with no gate, so the requirement is
+satisfied going forward rather than retroactively — and that is the intended outcome, not a gap
+awaiting a fix. There is **no** backfill, no one-time review pass and no migration over existing
+rules; the product owner reviewed this and chose to leave them alone. Do not add remediation for
+them during implementation.
 
 **Accepted:** `GUARDRAILS` still outranks the rules block by prompt-text ordering alone. This PRD
 changes *who writes rules*, not *how strongly the model honours block precedence*.
