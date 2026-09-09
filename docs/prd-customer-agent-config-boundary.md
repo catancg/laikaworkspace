@@ -201,10 +201,13 @@ saving, the card shows a pending banner with the submitted values and, when the 
 rejected, the `reject_note`. The customer must be able to see why their edit is not live, or they
 retype it and open a support ticket.
 
-**Superadmin panel.** Two screens under the existing `/superadmin/tenants/[slug]/` group, beside
-`faq/` and `funnel/`: `reglas/` for authoring rules against the tenant DB, and `negocio/` for
-reviewing a draft field-by-field against live, with Aprobar and Rechazar. The tenant list gets a
-pending badge from `GET /tenants/business/pending-count`.
+**Superadmin panel.** Rules get a `TenantRulesSection` component on the tenant detail page, beside
+the existing `TenantAgentsSection` and `TenantFunnelSection` — not a sub-route. Corrected during
+planning: the detail page composes sections for exactly this kind of short per-tenant list, and it
+puts rules where a superadmin is already editing prompts. Business review does get its own screen,
+`/superadmin/tenants/[slug]/negocio/`, beside `faq/` and `funnel/`, since a field-by-field diff with
+Aprobar and Rechazar is too large to inline. The tenant list gets a pending badge from
+`GET /tenants/business/pending-count`.
 
 **`lib/api.ts`** — the usual single edit. `api.rules.create/update/remove` are **removed**, not left
 to 403: a dead client function is a trap for the next feature. Added: `api.business.saveDraft`,
