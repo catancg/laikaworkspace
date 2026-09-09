@@ -1,6 +1,7 @@
 # PRD 9 — Line breaks in manual replies
 
-**Status:** propuesto
+**Status:** implementado — verificado en local contra `tenant-dev` (§7, items 1, 2, 4, 5, 6, 7);
+falta el item 3 (llegada real a un cliente de WhatsApp)
 **Repo:** `soylaika.frontend` only — no backend change, no migration
 **Screen:** `/contacts/[id]`, the manual reply box ([page.tsx:282](../soylaika.frontend/app/(crm)/contacts/[id]/page.tsx))
 
@@ -135,9 +136,12 @@ leaves behind and preserves the interior ones, which is the correct behaviour fo
 `disabled={botActive || sending}` condition, the send button's `!message.trim()` guard, the
 scroll-to-bottom and new-message-count logic: all untouched.
 
-The manual placeholder gains a hint — "Escribí un mensaje manual (Shift+Enter para saltar de
-línea)..." — because a key combination nobody is told about is a key combination nobody uses.
-The bot-mode placeholder is unchanged.
+**The placeholder text stays as it is.** A key combination nobody is told about is a key
+combination nobody uses, so the shortcut is announced — but in the `title` tooltip, not in the
+placeholder. Putting it in the placeholder was tried and reverted: the longer string needs 406px
+of text width, so below a composer width of ~446px (roughly a browser window under ~1080px) it
+wraps to a second line inside a box that is one line tall, clipping itself and raising a
+scrollbar on an empty field. The tooltip costs nothing at any width.
 
 ## 5. Mobile is a known gap, accepted
 
