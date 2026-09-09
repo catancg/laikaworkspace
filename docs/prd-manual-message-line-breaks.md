@@ -111,21 +111,33 @@ Three details, each of which is a bug if omitted:
 
 ### 4.3 Growing and resetting
 
-The box grows from 1 row to a ceiling of ~6 rows (`max-h-32`), then scrolls internally. Growth
-is done by setting `style.height = "auto"` then `scrollHeight` on the element, called from
-`onChange` — not from a `useEffect`, to avoid adding to the repo's non-zero
-`react-hooks/set-state-in-effect` lint baseline.
+The box grows from 1 row (44px) to a ceiling of 6 rows (144px), then scrolls internally. Growth
+is done by setting `style.height = "auto"` and then `scrollHeight`, clamped in JS between those
+two constants, called from `onChange` — not from a `useEffect`, to avoid adding to the repo's
+non-zero `react-hooks/set-state-in-effect` lint baseline. The clamp lives in JS rather than in a
+`max-h-*` class because the inline height set by the same function would otherwise fight it.
+
+`scrollHeight` excludes the borders under `box-sizing: border-box`, so the measurement adds
+`offsetHeight - clientHeight` back. Without it the box lands 2px short and jitters.
 
 `handleSend` clears `message` by setting state, which fires no `onChange`, so **the height must
-be reset explicitly after a send** or the box stays six rows tall over an empty value. A ref to
-the element, reset alongside `setMessage("")`, covers it.
+be reset explicitly after a send** or the box stays six rows tall over an empty value.
+
+**Do not reset it by measuring.** Calling the grow function right after `setMessage("")` reads a
+DOM that still holds the old text — React has not re-rendered yet — so it measures the long
+value and the box stays tall. The reset assigns the one-row height directly, which is
+deterministic and needs no measurement.
 
 ### 4.4 What does not change
 
 `handleSend`'s `.trim()` stays exactly as it is — it strips the trailing newlines a seller
 leaves behind and preserves the interior ones, which is the correct behaviour for both. The
-`disabled={botActive || sending}` condition, the placeholder swap, the send button's
-`!message.trim()` guard, the scroll-to-bottom and new-message-count logic: all untouched.
+`disabled={botActive || sending}` condition, the send button's `!message.trim()` guard, the
+scroll-to-bottom and new-message-count logic: all untouched.
+
+The manual placeholder gains a hint — "Escribí un mensaje manual (Shift+Enter para saltar de
+línea)..." — because a key combination nobody is told about is a key combination nobody uses.
+The bot-mode placeholder is unchanged.
 
 ## 5. Mobile is a known gap, accepted
 
