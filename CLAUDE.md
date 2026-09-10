@@ -50,8 +50,10 @@ at runtime.
 - **`docs/prd-*.md`** — one file per feature, each titled `PRD N` in its heading. Current set,
   in numbering order: RAG knowledge layer (1), FAQ content ingestion (2), FAQ admin UI (3),
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
-  versioning (7), funnel stage criteria (8), manual message line breaks (9). PRDs 1–5 are
-  implemented and in production; 6–7 and 9 are proposed; 8 is implemented.
+  versioning (7), funnel stage criteria (8), manual message line breaks (9), customer
+  boundary on agent configuration (10). PRDs 1–5, 8 and 9 are implemented; 6, 7 and 10 are
+  proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who may write* agent config, 7 owns
+  *history and undo* — so changing one means re-reading the other's boundary section.
 - **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
   written from a PRD before execution. See `docs/plans/README.md`.
 
