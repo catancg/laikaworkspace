@@ -261,10 +261,17 @@ The migration must be **pre-applied** to tenant databases before the backend dep
 swallowed into a `logger.warn`, and a tenant whose CRM reads a table that does not exist yet
 surfaces as a broken settings screen for the customer.
 
-Backend and frontend deploy independently, and the order matters: **backend first**. A frontend that
-has already removed the rules controls against a backend that still accepts them is merely
-over-restrictive; the reverse — a frontend still offering Agregar against a backend returning 403 —
-is a visibly broken screen.
+Backend and frontend deploy independently, and the order matters: **backend first**.
+
+Corrected during the final review, which caught this section arguing for the opposite of what it
+directs. The order is right; the original reasoning was not. Backend-first is correct because it
+closes the hole the moment it lands, and its interim state is mild: an old frontend still offering
+Agregar gets a 403 whose Spanish message `lib/api.ts` surfaces verbatim in a toast, so the operator
+reads "las reglas las gestiona el equipo de SoyLaika", not an opaque failure. Frontend-first is the
+bad order — it would leave the write endpoints open to customers while simultaneously 404-ing the
+superadmin section meant to replace them, i.e. no control and no replacement at once.
+
+Deploy the two close together regardless; the interim state is acceptable, not desirable.
 
 ---
 
@@ -279,6 +286,14 @@ them during implementation.
 
 **Accepted:** `GUARDRAILS` still outranks the rules block by prompt-text ordering alone. This PRD
 changes *who writes rules*, not *how strongly the model honours block precedence*.
+
+**Accepted, deliberately:** the rules block's own heading at
+[ai.service.ts:900](../soylaika.backend/src/ai/ai.service.ts) still reads *"definidas por el dueño"*
+— which stops being strictly true once only SoyLaika can write rules. It stays. That string is live
+prompt text sent to the model on every conversation, so editing it is a behavioural change requiring
+its own verification, not a wording tidy-up; and the grandfathered rows from §2.4 genuinely *were*
+written by the owner, so the attribution is still accurate for the content actually in production
+today. Raised by the final review of Phase 1 and closed as out of scope; do not "fix" it in passing.
 
 **Out of scope:** rule content validation (a superadmin can still write a self-defeating rule; that
 is a trusted-author problem, not an authorization one); versioning and revert (PRD 7); the FAQ
