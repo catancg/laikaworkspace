@@ -51,9 +51,23 @@ at runtime.
   in numbering order: RAG knowledge layer (1), FAQ content ingestion (2), FAQ admin UI (3),
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
   versioning (7), funnel stage criteria (8), manual message line breaks (9), customer
-  boundary on agent configuration (10). PRDs 1–5, 8 and 9 are implemented; 6, 7 and 10 are
-  proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who may write* agent config, 7 owns
-  *history and undo* — so changing one means re-reading the other's boundary section.
+  boundary on agent configuration (10), message origin (11), contact lifecycle events (12),
+  acquisition attribution (13), quote capture (14). PRDs 1–5, 8 and 9 are implemented;
+  6, 7, 10, 11, 12, 13 and 14 are proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who
+  may write* agent config, 7 owns *history and undo* — so changing one means re-reading the
+  other's boundary section. PRDs 11–14 come from one ~90-field customer-data dictionary,
+  split by what is structurally missing rather than by topic: 11 owns *what sent a message*,
+  12 *when things happened to the lead*, 13 *where the lead came from*, 14 *what was
+  quoted*. PRD 11 §3 is the boundary between 11 and 12. **PRD 15 — the opportunity entity —
+  is the unwritten fifth**, and all four written PRDs end with the same note that their
+  table gains a nullable `opportunityId` when it lands; it is last because `Contact.stageId`
+  and `.status` are read across ~55 references in five backend files and twenty frontend
+  files, so it is a refactor where the others are captures. Three sections carry decisions
+  the rest of the work leans on: PRD 12 §5.1 deliberately does not model the
+  disqualification taxonomy (and notes that PRD 8's `MAX_OUT_ENABLED` cap leaves only one
+  free `out` stage slot), PRD 13 §3.1 establishes that "direct" and "referred" are
+  indistinguishable at the webhook so neither is ever inferred, and PRD 14 §3 explains why
+  the table is not called `Quote`.
 - **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
   written from a PRD before execution. See `docs/plans/README.md`.
 
@@ -133,13 +147,21 @@ Request bodies are plain objects, not DTO classes, and the `@Body()` type annota
 TypeScript only — erased at runtime. Nothing validates them.
 
 **So mass assignment is the default here**, and it has bitten this codebase repeatedly:
-`PATCH /tenants/:slug`, `PATCH /tenants/:slug/templates/:id`, and — still live —
-`POST` and `PATCH /api/funnel/stages`, which forward the raw body into
+`PATCH /tenants/:slug`, `PATCH /tenants/:slug/templates/:id`, `PATCH /crm/contacts/:id`, and
+— still live — `POST` and `PATCH /api/funnel/stages`, which forward the raw body into
 `db.funnelStage.create` / `.update`.
 
 The fix is always a **named allowlist** in the controller or service. Do **not** reach for
 `app.useGlobalPipes(new ValidationPipe({ whitelist: true }))`: almost no endpoint here has a DTO
 to validate against, so a global pipe would reject most of the API.
+
+`CrmService.updateContact` is the worked example — `CONTACT_PATCH_FIELDS` plus
+`src/crm/crm.service.update-contact.spec.ts`. Two details from it that generalise: use `in` and
+not `!== undefined`, or a legitimate `notes: null` (clearing a field) becomes indistinguishable
+from an absent one; and write the tests that pin the *surrounding* behaviour at the same time,
+because an allowlist silently drops anything you forget to list. The worst field there was not
+the obvious one — `claimedById` let any user bypass `claimContact`'s conflict check entirely, so
+when auditing one of these, ask which columns are themselves controls.
 
 The same shape applies to guards. `@Roles` on a controller class only works because `RolesGuard`
 reads `reflector.getAllAndOverride([handler, class])` — with `reflector.get(handler)` it silently
