@@ -55,9 +55,12 @@ into a lost stage.
 and `lostNote` hold a current value with no time attached, and `Contact.updatedAt` is overwritten by
 the next unrelated write to the row.
 
-### 1.3 A log over a mass-assignment hole
+### 1.3 A log over a mass-assignment hole — fixed, and why it mattered here
 
-`updateContact` spreads the raw request body:
+**Resolved before this PRD, as it required.** Recorded because the reasoning is the precondition for
+the log meaning anything.
+
+`updateContact` used to spread the raw request body:
 
 ```ts
 const updateData: any = { ...data };
@@ -65,14 +68,17 @@ const updateData: any = { ...data };
 
 The `@Body()` annotation at [crm.controller.ts:51](../soylaika.backend/src/crm/crm.controller.ts) is
 TypeScript and erased at runtime, and this project has no global `ValidationPipe`. So any authenticated
-CRM user can write `value`, `claimedById`, `claimedAt`, `agentTurn` or `createdAt` — and writing
-`claimedById` directly bypasses the conflict check in `claimContact`, which is the control that stops
+CRM user could write `value`, `claimedById`, `claimedAt`, `agentTurn` or `createdAt` — and writing
+`claimedById` directly bypassed the conflict check in `claimContact`, which is the control that stops
 two salespeople taking the same conversation.
 
-This is a separate fix (a named allowlist, the pattern the repo already uses) and is **not** part of
-this PRD. It is recorded here because it bears directly on the log's meaning: **an event log over a
-mass-assignment endpoint records arbitrary writes as legitimate history.** It makes the hole more
-convincing, not more visible. The allowlist should land before or alongside this PRD, not after.
+It is now a named allowlist of the nine declared fields, with eleven tests — two for the hole and nine
+pinning the stage-sync behaviour that had no coverage at all.
+
+The reason it blocked this PRD: **an event log over a mass-assignment endpoint records arbitrary writes
+as legitimate history.** It would have made the hole more convincing, not more visible. Any future
+endpoint that mutates a lead has the same precondition — the log is only as trustworthy as the writes
+it faithfully records.
 
 ---
 

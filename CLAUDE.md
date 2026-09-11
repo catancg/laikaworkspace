@@ -147,13 +147,21 @@ Request bodies are plain objects, not DTO classes, and the `@Body()` type annota
 TypeScript only — erased at runtime. Nothing validates them.
 
 **So mass assignment is the default here**, and it has bitten this codebase repeatedly:
-`PATCH /tenants/:slug`, `PATCH /tenants/:slug/templates/:id`, and — still live —
-`POST` and `PATCH /api/funnel/stages`, which forward the raw body into
+`PATCH /tenants/:slug`, `PATCH /tenants/:slug/templates/:id`, `PATCH /crm/contacts/:id`, and
+— still live — `POST` and `PATCH /api/funnel/stages`, which forward the raw body into
 `db.funnelStage.create` / `.update`.
 
 The fix is always a **named allowlist** in the controller or service. Do **not** reach for
 `app.useGlobalPipes(new ValidationPipe({ whitelist: true }))`: almost no endpoint here has a DTO
 to validate against, so a global pipe would reject most of the API.
+
+`CrmService.updateContact` is the worked example — `CONTACT_PATCH_FIELDS` plus
+`src/crm/crm.service.update-contact.spec.ts`. Two details from it that generalise: use `in` and
+not `!== undefined`, or a legitimate `notes: null` (clearing a field) becomes indistinguishable
+from an absent one; and write the tests that pin the *surrounding* behaviour at the same time,
+because an allowlist silently drops anything you forget to list. The worst field there was not
+the obvious one — `claimedById` let any user bypass `claimContact`'s conflict check entirely, so
+when auditing one of these, ask which columns are themselves controls.
 
 The same shape applies to guards. `@Roles` on a controller class only works because `RolesGuard`
 reads `reflector.getAllAndOverride([handler, class])` — with `reflector.get(handler)` it silently
