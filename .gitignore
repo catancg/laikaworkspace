@@ -14,3 +14,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.log
+
+# Artefactos de sesion: capturas, dumps del browser, CSVs de prueba.
+# Los PNG de docs/ si se versionan; lo que queda tirado en la raiz, no.
+.playwright-mcp/
+/*.png
+/*.csv
