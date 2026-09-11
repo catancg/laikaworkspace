@@ -211,6 +211,27 @@ claim-conflict rule, and only writes when `count` is 1 — so the event write mu
 same result, inside the transaction. It is the only site where the event is not unconditional, and it is
 the one most worth a test.
 
+### 6.2 Two cases this table did not anticipate
+
+**Found during implementation.**
+
+**A stage change that isn't one.** `moveStage` is called on paths that run per message — the
+classifier writes a stage on every reply, usually the same one. Writing `stage_changed` each time
+would produce a history no one can read: thousands of rows saying a lead moved from `cotizado` to
+`cotizado`. So `moveStage` compares the current stage first and **writes the contact row but no
+event when the stage is unchanged**. The contact write still happens because the caller may be
+updating `status` or `details` alongside.
+
+**A `status` with no stage behind it.** `updateContact` accepted a `status` string from the request
+body and, when it matched no `FunnelStage`, wrote it anyway. That produced a lead in a state the
+funnel does not know about — and under this PRD it would also be a state change with no event, since
+there is no stage to record a transition between.
+
+`status` and `stageId` are now only written resolved against a real stage. This is a behaviour
+change beyond the log: previously the API accepted arbitrary status strings, and now it ignores
+them. It is the right change — the pair only means anything together — but it is a change, and this
+is where it is recorded.
+
 ### 6.1 The actor is a required argument
 
 Every method takes an explicit actor. No default, no inference, no optional parameter — the same
@@ -222,7 +243,15 @@ log whose actor column is sometimes empty answers "who did this" with "sometimes
 ## 7. Migration
 
 One migration, `prisma/migrations/20260912120000_contact_event/migration.sql`: `CREATE TABLE IF NOT
-EXISTS "ContactEvent"`, two indexes, two foreign keys. Purely additive — it creates a table and touches
+EXISTS "ContactEvent"`, two indexes, two foreign keys — `contactId` with `ON DELETE CASCADE`,
+`actorUserId` with `ON DELETE SET NULL`, in the `DO` block idiom PRD 11 §7 introduced.
+
+**There is deliberately no foreign key on `fromStageId` / `toStageId`.** A stage can be disabled or
+deleted from the panel (PRD 8), and that must not be able to take with it the history of every lead
+that passed through it. Same reasoning as PRD 14 §8.1's `productId`: a weak reference that still
+joins while the row exists, and survives when it doesn't.
+
+Purely additive — it creates a table and touches
 no existing row.
 
 No backfill is possible. The history genuinely is not there: nothing recorded the transitions, and
