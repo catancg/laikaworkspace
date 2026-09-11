@@ -116,6 +116,7 @@ model AcquisitionTouch {
   token         String?  // website tracking token, when that mechanism lands
   note          String?  // who referred, when a person records it
   recordedById  String?  // set when a human stated it; null when captured automatically
+  recordedBy    User?    @relation("AcquisitionRecordedBy", fields: [recordedById], references: [id])
   createdAt     DateTime @default(now())
 
   @@index([contactId, createdAt])
@@ -150,6 +151,28 @@ detailed. Nothing has to be guessed about Meta's behaviour.
 The column is nullable because a `referral` or `website` row written by a human (§6) has no carrying
 message.
 
+### 4.2.1 The ad id does not fit in a JavaScript number
+
+**Found during implementation, by running the mapper rather than reading it.**
+
+Meta's ad ids are around 18 digits — the documented example is `120226305854810726`. That is larger
+than `Number.MAX_SAFE_INTEGER`, so as a JavaScript number it becomes `120226305854810720`. The last
+digits are gone and cannot be recovered.
+
+This matters because the natural defensive move — "accept a number and convert it, a mistyped JSON
+is no reason to lose the attribution" — is exactly wrong here. It would store **an ad id that is
+wrong but looks right**, which is worse than storing nothing: it silently corrupts the one
+measurement this PRD exists to produce, in a way no report would reveal.
+
+So the mapper accepts a number only when `Number.isSafeInteger` holds, and otherwise stores null.
+Meta sends ids as JSON strings, so this branch almost never runs — it exists so that the day it
+does, the failure is visible rather than plausible.
+
+ESLint's `no-loss-of-precision` flags the literal in the test independently, which is confirmation
+of the hazard rather than an inconvenience; the test suppresses the rule with that reason stated.
+
+This is also the argument for `sourceId` being `TEXT` in the database and never a numeric column.
+
 ### 4.3 `channel` from day one
 
 Only `'whatsapp'` is ever written by this PRD. The column exists anyway because Instagram and Facebook
@@ -172,8 +195,15 @@ business's own copy, echoed back.
 Two mechanisms, both requiring nothing outside this repo:
 
 - **`ad`** — when `message.referral` is present, one row with the ad fields, deduped by `whatsappMsgId`.
-- **`unattributed`** — when a contact's first inbound message carries no referral, one row recording
-  that, so "no signal" is a fact in the data rather than an absent join.
+- **`unattributed`** — when a contact has **no touches at all** and a message arrives with no
+  referral, one row recording that, so "no signal" is a fact in the data rather than an absent join.
+
+  **Corrected during implementation.** This said "a contact's *first inbound message*", which is both
+  harder to determine and wrong at the edges: `upsertContact` does not report whether it created or
+  found the contact, and a lead whose first message carried a referral would later get a spurious
+  `unattributed` row from their second. Keying on "has no touches yet" is one query, needs nothing
+  from the upsert, and is self-correcting — once any signal exists, no further `unattributed` row can
+  be written. Without that cut there would be one `unattributed` row per message the customer sends.
 
 ### 5.1 Capture point, and not breaking the message flow
 
@@ -232,8 +262,13 @@ names can be resolved later against rows that already exist, which is not true o
 ## 9. Migration
 
 One migration, `prisma/migrations/20260913120000_acquisition_touch/migration.sql`: `CREATE TABLE IF NOT
-EXISTS "AcquisitionTouch"`, three indexes, one unique constraint on `whatsappMsgId`, one foreign key.
-Purely additive.
+EXISTS "AcquisitionTouch"`, three indexes, one unique constraint on `whatsappMsgId`, and **two**
+foreign keys — `contactId` with `ON DELETE CASCADE`, `recordedById` with `ON DELETE SET NULL` — both
+inside the `DO` block idiom PRD 11 §7 introduced, so the file can be pre-applied by hand before a
+deploy. Purely additive.
+
+Verified against a throwaway database: it runs **twice** with no errors and leaves exactly those two
+constraints with those two actions.
 
 No backfill. The referral payloads were never stored and are not recoverable from anything — unlike PRD
 11 §6.1, there is no residue to reconstruct from. Attribution starts on the day this ships.
