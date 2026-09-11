@@ -107,8 +107,22 @@ Settled during design; recorded because each closes off an alternative.
    Rejected under YAGNI: a field-level change queue.
 4. **Existing content is grandfathered as approved.** Rules stay active, business info stays live.
    The gate applies to edits from cutover onward. See §7 for the risk this accepts.
-5. **A superadmin's `PUT /api/business` writes straight to live**, skipping the draft. Making SoyLaika
-   staff approve their own edits is ceremony with no control value.
+5. ~~**A superadmin's `PUT /api/business` writes straight to live**, skipping the draft.~~
+   **Withdrawn during Phase 2's final review — the path was unreachable as designed.** The intent
+   stands (SoyLaika staff should not have to approve their own edits), but `PUT /api/business` is
+   the wrong door for it. With an `X-Tenant-Slug`, `JwtStrategy` looks the user up in the *tenant's*
+   `User` table, where provisioning seeds only `role: 'admin'` — a superadmin gets 401. Without the
+   header, `req.tenantDb` is null and the write lands on the **master** `BusinessProfile`, which no
+   tenant's bot reads. This repo had already hit and documented the same hazard for FAQ
+   ([tenants.service.ts:646](../soylaika.backend/src/tenants/tenants.service.ts), citing PRD 3 §4.1);
+   §2.5 walked into it again.
+
+   So the branch was dead for staff and live only for a tenant admin who had escalated their own
+   role (§7.1) — pure liability. It is removed: `PUT /api/business` now always writes a draft.
+   Delivering the original intent needs a tenant-scoped `PUT /tenants/:slug/business` on
+   `TenantsController`, mirroring `createTenantFaq`, so a reviewer can correct one field of a
+   near-right draft instead of rejecting it and asking the customer to retype. **Not built yet** —
+   until it exists, a reviewer's only tools are Aprobar and Rechazar.
 
 ---
 
@@ -163,7 +177,7 @@ allowlist. `TenantsService` resolves the slug to a DB and calls them, the same w
 | Endpoint | Change |
 |---|---|
 | `GET /api/business` | unchanged — returns the approved live record |
-| `PUT /api/business` | same `@Roles('admin','superadmin')`; upserts the **draft** for a tenant admin, writes **live** for a superadmin (§2.5) |
+| `PUT /api/business` | same `@Roles('admin','superadmin')`; always upserts the **draft**, whatever the caller's role (§2.5, corrected) |
 | `GET /api/business/draft` | new — the customer sees their pending submission and any `reject_note` |
 | `GET /tenants/:slug/business` | new, superadmin — returns live and draft together for diffing |
 | `POST /tenants/:slug/business/approve` | copies draft fields onto live, deletes the draft, invalidates the cache |
@@ -250,7 +264,25 @@ known-nonzero baseline must not grow.
   shows whose submission is current.
 - **Editing after a rejection** resets the draft to `PENDING_REVIEW` and clears `reject_note`.
 - **Approval racing an edit.** Approve copies the draft as read; a submission landing afterwards
-  becomes a fresh pending draft rather than being silently absorbed.
+  becomes a fresh pending draft rather than being silently absorbed. Enforced by making the
+  post-approve delete conditional on `(id, submitted_at)`, so a row that moved is not removed —
+  added during Phase 2's final review, which found the unconditional delete silently destroying
+  such a submission.
+
+- **A resubmission landing *before* approve but *after* the reviewer's page loaded.** The ordering
+  above covers the reverse case only; this one was missed until Phase 3's final review. The review
+  screen fetches once on mount, so a customer who resubmits while a superadmin's tab sits open —
+  plausible, since that tab may be left open across a support call — means the superadmin clicks
+  Aprobar on a diff that no longer matches what gets written to the bot's prompt. `approveDraft`
+  re-reads the current row server-side, so the *newest* submission is what lands; the stale artefact
+  is the diff the reviewer looked at, not the data.
+
+  **Accepted for now, deliberately.** The content is still authored by the same trusted tenant admin,
+  and a reviewer who notices can reject afterwards — so this is a "reviewed something I didn't read"
+  problem, not a trust boundary failure. Closing it properly means re-fetching before approve and
+  comparing `submitted_at`, refusing the click if it moved. **Not built.** Do not mistake the
+  conditional delete above for protection against this ordering: it guards the row from being
+  deleted, not the reviewer from being shown stale text.
 
 ---
 
@@ -273,9 +305,44 @@ superadmin section meant to replace them, i.e. no control and no replacement at 
 
 Deploy the two close together regardless; the interim state is acceptable, not desirable.
 
+**That reasoning covers rules only — for business info the interim state is worse, not milder.**
+Added after Phase 2's final review caught the asymmetry. A stale CRM against a Phase-2 backend does
+not get a legible 403: `PUT /api/business` returns **200** with the draft body, the form re-renders
+the customer's own text, and the toast says *"Información del negocio guardada."* Nothing reached the
+bot and nothing says so. A customer updates their hours, sees success, and hears the bot quote the
+old hours to a real WhatsApp conversation.
+
+Backend-first is still the right order — the failure is silent either way, and frontend-first would
+additionally leave the write path ungated. But Phases 2 and 3 should ship in the **same deploy
+window**. If they cannot, the Phase 2 deploy needs a heads-up to tenants that business edits are
+paused, because the UI will lie to them until Phase 3 lands.
+
 ---
 
 ## 7. Accepted risks and out of scope
+
+### 7.1 The gate depends on role integrity — and that had a hole
+
+Found by Phase 2's final review, and **fixed in Phase 2** rather than accepted. Recorded here because
+it is the load-bearing assumption of this entire PRD, and a future change that reopens it silently
+un-does both phases.
+
+Every control in this document reduces to one predicate: a customer cannot become `superadmin`.
+`RolesGuard` compares `req.user.role`, and `JwtStrategy` re-reads that role from the **tenant's own**
+`User` table on every request. But `UsersService.create`/`update` forwarded the raw request body to
+Prisma with no allowlist, and `role` was in it — while `@Roles('admin')` let a tenant admin PATCH
+their own user. One call (`PATCH /api/users/<self> {"role":"superadmin"}`) escalated them.
+
+The blast radius was never limited to business info: the forged role also satisfied
+`TenantsController`'s class-level `@Roles('superadmin')`, whose handlers resolve `:slug` from the
+**master** database — reaching every other tenant's agents, rules, funnel criteria and FAQ approval.
+It defeated Phase 1's rules lockdown too: `/api/rules` still returned 403, but `/tenants/:slug/rules`
+was wide open.
+
+The fix is a named allowlist in `UsersService` — the same remedy the root CLAUDE.md prescribes for
+this codebase's recurring mass-assignment defect — restricting tenant-scoped role assignment to
+`admin` and `vendedor`. **Anything that adds a role-writing path must re-apply it.** A review gate
+whose only bypass is a single request the gated party is authorised to issue is not a gate.
 
 **Decided, not merely accepted:** by §2.4, every tenant's existing `BotRule` rows stay live and
 unreviewed after cutover. Those rows were authored by customers with no gate, so the requirement is
