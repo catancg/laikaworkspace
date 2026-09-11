@@ -133,6 +133,14 @@ and `contactId` is in scope at the only call site,
 So the change is one field added to that context object. The same shape as PRD 11 §5.1: the caller knows
 and the callee does not, and the fix is an argument rather than a plumbing project.
 
+**Added during implementation:** `contactId` is optional on that context, and when it is absent
+**nothing is written** — the tool still returns its total as normal. A quote whose customer is unknown
+answers none of the questions this table exists for, and inventing a placeholder would be worse than
+the missing row. This differs from PRD 11 §5.1, where the equivalent parameter was made *required*: there
+the caller was a controller with the user in hand, so an absent value could only be a bug. Here the
+context object is shared by every tool, most of which have no use for a contact, and forcing it would
+make six unrelated call paths carry a field to satisfy one.
+
 ### 5.1 A failed write must not cost the customer their price
 
 The write is guarded; a failure is a `logger.warn` and nothing else. The tool result returns and the
@@ -188,8 +196,25 @@ and 13 all carry.
 ## 8. Migration
 
 One migration, `prisma/migrations/20260914120000_quote_calculation/migration.sql`: `CREATE TABLE IF NOT
-EXISTS "QuoteCalculation"`, two indexes, two foreign keys. Purely additive, no backfill possible — the
+EXISTS "QuoteCalculation"`, two indexes, **one** foreign key. Purely additive, no backfill possible — the
 totals were never stored and prose in old messages is not a source to reconstruct them from.
+
+### 8.1 There is deliberately no foreign key to `Product`
+
+**Corrected during implementation.** This section said "two foreign keys". There is one, on
+`contactId`, with `ON DELETE CASCADE`.
+
+`productId` is a **weak reference** on purpose. The catalogue is re-imported from a feed, so a product
+can disappear from it — and a product vanishing must not be able to take with it the quote that was
+given to a customer. With a foreign key, that deletion either cascades (destroying the quote) or is
+blocked (breaking the import).
+
+This is safe precisely because of §4: `unitPrice` and `title` are **copied** onto the row at the moment
+of calculation. The row stands on its own without the catalogue, which is the same property that makes
+it survive a price change. `productId` is there to join when the product still exists, not to guarantee
+that it does.
+
+The `contactId` key stays real, and cascades: a deleted contact's quotes are meaningless.
 
 The directory name must sort after the other three PRDs' migrations if they land first, and must be
 settled **before it is pushed**: `TenantMigrationsService` keys its registry on the directory name, so
