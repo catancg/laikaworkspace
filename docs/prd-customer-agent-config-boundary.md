@@ -264,7 +264,25 @@ known-nonzero baseline must not grow.
   shows whose submission is current.
 - **Editing after a rejection** resets the draft to `PENDING_REVIEW` and clears `reject_note`.
 - **Approval racing an edit.** Approve copies the draft as read; a submission landing afterwards
-  becomes a fresh pending draft rather than being silently absorbed.
+  becomes a fresh pending draft rather than being silently absorbed. Enforced by making the
+  post-approve delete conditional on `(id, submitted_at)`, so a row that moved is not removed —
+  added during Phase 2's final review, which found the unconditional delete silently destroying
+  such a submission.
+
+- **A resubmission landing *before* approve but *after* the reviewer's page loaded.** The ordering
+  above covers the reverse case only; this one was missed until Phase 3's final review. The review
+  screen fetches once on mount, so a customer who resubmits while a superadmin's tab sits open —
+  plausible, since that tab may be left open across a support call — means the superadmin clicks
+  Aprobar on a diff that no longer matches what gets written to the bot's prompt. `approveDraft`
+  re-reads the current row server-side, so the *newest* submission is what lands; the stale artefact
+  is the diff the reviewer looked at, not the data.
+
+  **Accepted for now, deliberately.** The content is still authored by the same trusted tenant admin,
+  and a reviewer who notices can reject afterwards — so this is a "reviewed something I didn't read"
+  problem, not a trust boundary failure. Closing it properly means re-fetching before approve and
+  comparing `submitted_at`, refusing the click if it moved. **Not built.** Do not mistake the
+  conditional delete above for protection against this ordering: it guards the row from being
+  deleted, not the reviewer from being shown stale text.
 
 ---
 
