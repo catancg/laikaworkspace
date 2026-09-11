@@ -123,13 +123,30 @@ not alter every tenant's bot behaviour the moment it deploys.
 re-entering stage has nowhere to go — and the current code fails *silently* there (`findFirst`
 returns null, the `if` is skipped, nothing happens). Two means the destination depends on row order.
 
-Validated on write, next to PRD 8's existing stage-count limits in
-[funnel-criteria.ts](../soylaika.backend/src/funnel/funnel-criteria.ts), with the same shape: reject
-the write, name the reason.
+**Corrected during implementation.** This section originally said "validated on write: reject the
+write, name the reason", the same shape as PRD 8's stage-count limits. That **deadlocks.** To move
+the target to another stage you would have to either unset the current one — leaving zero, rejected
+— or set a second — leaving two, also rejected. The invariant could never be changed, only observed.
 
-The read path keeps the existing degrade — if no target is configured, do nothing — but now logs a
-warning instead of silently skipping, because after this PRD an unconfigured target is a
-misconfiguration rather than a normal state.
+It is a **radio button, not a checkbox with a validator.** Marking a stage as the target clears the
+previous one in the same transaction, so the invariant holds by construction rather than by
+refusal. That is the shape the property actually has: "the destination" is single by definition, and
+modelling it as an independent boolean per row and then forbidding the invalid combinations was the
+error.
+
+Two things are still rejected, because neither is reachable by the swap:
+
+- **Unsetting the only target.** The error names the way out: mark another stage and this one is
+  released automatically.
+- **Disabling the stage that is the target**, checked in `setEnabled` alongside PRD 8's caps. This is
+  the case the swap cannot cover, and it is the one that fails silently today.
+
+`checkReentryTarget` in [funnel-criteria.ts](../soylaika.backend/src/funnel/funnel-criteria.ts) is
+what remains of the validator, and it exists for that second case.
+
+Unlike `checkCaps`, this check is **absolute** rather than "don't make it worse". `checkCaps` had to
+tolerate tenants who already exceeded the caps when they were introduced; here the migration seeds
+exactly one target, so no tenant ever starts in an invalid state.
 
 ### 3.4 What re-entry does not do
 
@@ -191,12 +208,34 @@ row set from shrinking when customers return.
 ## 5. Migration
 
 One migration: two boolean columns with `DEFAULT false`, plus the `UPDATE`s that set the seeds in
-§3.2 — scoped by slug, and only where the column is still at its default, so a tenant who has already
-configured something is never overwritten.
+§3.2, so a tenant who has already configured something is never overwritten.
 
 This is the first migration in the series with an `UPDATE` in it. It is safe because it writes only
 to columns this same migration created, and because the values it writes reproduce the behaviour that
 already exists in code.
+
+### 5.1 The guard is `NOT EXISTS`, not `= false`
+
+**Corrected during implementation, and it took running the migration twice to find.**
+
+The first version guarded each seed with `AND "isReentryTarget" = false`. That reads as "only write
+if nobody has set it", and it is not: `false` cannot distinguish *never configured* from *the tenant
+deliberately turned it off*.
+
+The failure needs a second run to appear — which is exactly the sequence this repo asks for, since
+the migration is pre-applied by hand before a deploy and then applied again by
+`TenantMigrationsService` at boot. A tenant who had moved the target off `interesado` would have it
+silently restored on the second pass, leaving **two** targets: the one state §3.3 forbids, created by
+the migration that was supposed to establish the invariant.
+
+Both seeds are now guarded by `NOT EXISTS (SELECT 1 FROM "FunnelStage" WHERE <flag> = true)` — they
+write only to a funnel where nothing is configured at all. Verified by running the migration,
+configuring the flags as a tenant would, and running it again: the configuration survives and there
+is still exactly one target.
+
+The general lesson, which applies to any future seeding migration here: a boolean default is not a
+record of intent. If a seed needs to know whether a human has decided something, the absence of *any*
+decision is the only safe signal.
 
 Same `DO`-block idiom as PRDs 11–14 for idempotency, and the directory name must sort after
 `20260915120000_contact_event` and be settled before it is pushed.
