@@ -52,22 +52,27 @@ at runtime.
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
   versioning (7), funnel stage criteria (8), manual message line breaks (9), customer
   boundary on agent configuration (10), message origin (11), contact lifecycle events (12),
-  acquisition attribution (13), quote capture (14). PRDs 1–5, 8 and 9 are implemented;
-  6, 7, 10, 11, 12, 13 and 14 are proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who
+  acquisition attribution (13), quote capture (14), funnel re-entry (15). PRDs 1–5, 8,
+  9, 11, 12, 13 and 14 are implemented; 6, 7, 10 and 15 are proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who
   may write* agent config, 7 owns *history and undo* — so changing one means re-reading the
   other's boundary section. PRDs 11–14 come from one ~90-field customer-data dictionary,
   split by what is structurally missing rather than by topic: 11 owns *what sent a message*,
   12 *when things happened to the lead*, 13 *where the lead came from*, 14 *what was
-  quoted*. PRD 11 §3 is the boundary between 11 and 12. **PRD 15 — the opportunity entity —
-  is the unwritten fifth**, and all four written PRDs end with the same note that their
-  table gains a nullable `opportunityId` when it lands; it is last because `Contact.stageId`
-  and `.status` are read across ~55 references in five backend files and twenty frontend
-  files, so it is a refactor where the others are captures. Three sections carry decisions
+  quoted*. PRD 11 §3 is the boundary between 11 and 12. **The `Opportunity` entity that all
+  four of them promise was deliberately NOT built** — PRD 15 §2 is the record of why: PRD 12's
+  event log removed its justification, so PRD 15 became funnel re-entry plus a metrics fix
+  rather than a refactor across ~55 backend references and twenty frontend files. Their four
+  `opportunityId` hooks stay unused and cost nothing; if per-cycle analysis ever proves
+  painful to derive, the entity is still available and those PRDs still say where it plugs
+  in. A reader who finds four PRDs promising an entity and no entity should land on §2, not
+  assume it was forgotten. Four sections carry decisions
   the rest of the work leans on: PRD 12 §5.1 deliberately does not model the
   disqualification taxonomy (and notes that PRD 8's `MAX_OUT_ENABLED` cap leaves only one
   free `out` stage slot), PRD 13 §3.1 establishes that "direct" and "referred" are
-  indistinguishable at the webhook so neither is ever inferred, and PRD 14 §3 explains why
-  the table is not called `Quote`.
+  indistinguishable at the webhook so neither is ever inferred, PRD 14 §3 explains why the
+  table is not called `Quote`, and PRD 15 §4 is load-bearing for anyone touching the
+  resultados metrics: won counts are read from a lead's CURRENT stage, so once leads can
+  re-enter the funnel that number drops every time a customer comes back.
 - **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
   written from a PRD before execution. See `docs/plans/README.md`.
 
