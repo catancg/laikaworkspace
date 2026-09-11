@@ -234,10 +234,30 @@ ALTER TABLE "Message" ADD COLUMN IF NOT EXISTS "origin" TEXT;
 ALTER TABLE "Message" ADD COLUMN IF NOT EXISTS "sentByUserId" TEXT;
 CREATE INDEX IF NOT EXISTS "Message_contactId_origin_idx" ON "Message"("contactId", "origin");
 CREATE INDEX IF NOT EXISTS "Message_sentByUserId_idx" ON "Message"("sentByUserId");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Message_sentByUserId_fkey') THEN
+    ALTER TABLE "Message"
+      ADD CONSTRAINT "Message_sentByUserId_fkey"
+      FOREIGN KEY ("sentByUserId") REFERENCES "User"("id")
+      ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
 ```
 
-No `UPDATE`, no `NOT NULL`, no backfill, no data movement. On an existing tenant database this is
-two nullable columns and two indexes.
+No `UPDATE`, no `NOT NULL`, no backfill, no data movement.
+
+**Corrected during implementation.** This section originally listed only the two columns and two
+indexes, which would have made §4.3 false: `SET NULL` is a property of a foreign key, and without the
+constraint there is no referential action at all — just a text column that can point at a user who
+never existed. The migrations here are hand-written, so Prisma does not add it for you; the repo's
+own `Contact_claimedById_fkey` uses exactly this clause and is the precedent §4.3 was appealing to.
+
+The `DO` block is the first in this repo. Postgres has no `ADD CONSTRAINT IF NOT EXISTS`, and the
+migration has to survive being pre-applied by hand before a deploy — that is, running twice without
+failing. This is the only idiom that gives that property, and it is the pattern for any future
+additive foreign key here.
 
 `TenantMigrationsService.onApplicationBootstrap` applies unregistered migrations to **every active
 tenant database** in the background on every backend start, sorting directory names
@@ -260,10 +280,17 @@ sequence a live tenant requires: migration first, code second.
 
 ### 8.1 Per-path
 
-One spec covering the nine sites, in the shape
-[audio-transcription.spec.ts](../soylaika.backend/src/whatsapp/audio-transcription.spec.ts) already
-uses: a fake `db` that captures the arguments to `message.create`, then an assertion on the `origin`
-each path wrote. The manual-send case additionally asserts `sentByUserId` is the caller's id.
+**Corrected during implementation.** This section promised one spec asserting the `origin` written by
+each of the nine paths. What shipped asserts it for **one** — the manual send, in
+`send-manual.spec.ts`, which also asserts `sentByUserId` is the caller's id.
+
+The other eight are covered structurally by §8.2 and not individually. The reason is proportion: none
+of them has logic. Each is one literal in an object, and there are no processor specs in this repo, so
+asserting them individually means constructing `MessageProcessor` with its eight injected services to
+prove that a constant equals a constant. The manual send is the one with something to get wrong — a
+new required parameter, threaded from the controller — so it is the one with a real test.
+
+What this leaves uncovered is a *wrong but present* origin, which §8.3 already declares.
 
 This is worth stating because the alternative is tempting and useless: `npx tsc --noEmit` will not
 catch a missing `origin`. `db` is typed `any` throughout — `db.message.create({})` type-checks
@@ -275,20 +302,36 @@ The nine edits are easy and will be correct. The defect this PRD is actually exp
 outbound write site somebody adds in six months, who does not know `origin` exists. Because there is
 no default (§4.2) and no `NOT NULL`, that writer produces silent nulls forever and no test fails.
 
-So: **a source-level guard test**. It reads the files under `src/`, finds every `message.create`
-whose data object contains `role: 'assistant'`, and fails if that same call does not also set
-`origin`.
+So: **a source-level guard test**, `src/messaging/message-origin.guard.spec.ts`. It walks `src/`,
+finds every `message.create` whose `data` contains `role: 'assistant'`, and fails if that same call
+does not also set `origin` — naming the file and line.
 
-It is an unusual test — it asserts on source text rather than behaviour, and it will need care to
-survive reformatting. It is proposed anyway because it is the only mechanism that constrains code
-that has not been written yet, and this repository has the scar that makes the case: `@Roles` on a
-controller class was decoration and not a control until `RolesGuard` was changed to read
-`getAllAndOverride`, and three controllers sat unguarded in the meantime. A convention nothing
-asserts on is a convention that will be broken.
+It is an unusual test: it asserts on the code rather than on behaviour. It earns that because it is
+the only mechanism that constrains code which has not been written yet, and this repository has the
+scar that makes the case — `@Roles` on a controller class was decoration and not a control until
+`RolesGuard` was changed to read `getAllAndOverride`, and three controllers sat unguarded in the
+meantime. A convention nothing asserts on is a convention that will be broken.
 
-If the source-scanning approach proves too brittle in practice, the fallback is a runtime assertion
-in a thin `createOutboundMessage` helper that every outbound site must call — stronger, but a larger
-refactor than this PRD wants.
+**Changed during implementation:** this section proposed reading source *text*, and worried the test
+would need care to survive reformatting. It parses the **TypeScript AST** instead. A `message.create`
+split across lines, reindented by prettier, or with its properties reordered breaks a regex and does
+not break an AST walk — and the failure mode of a brittle test is worse than the bug it guards,
+because a test that fails for cosmetic reasons gets disabled.
+
+Three assertions beyond the main one, each earning its place:
+
+- the origin value must be one of the declared four, so a typo is not mistaken for a decision
+- an **inbound** write must *not* set origin, which is §4.1 enforced rather than merely documented
+- the walk must find at least nine outbound and seven inbound writes — without it, a change that
+  breaks the AST traversal makes every other assertion pass vacuously, which is the failure mode this
+  kind of test is most prone to
+
+It was verified by mutation, which is this repo's standard for whether a test is real: removing
+`origin` from `bulk.processor.ts` makes it fail and name that file and line.
+
+The fallback if it ever does prove brittle is unchanged — a runtime assertion inside a thin
+`createOutboundMessage` helper that every outbound site must call. Stronger, and a larger refactor
+than this PRD wanted.
 
 ### 8.3 What is not tested
 
