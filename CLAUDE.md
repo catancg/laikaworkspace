@@ -51,16 +51,20 @@ at runtime.
   in numbering order: RAG knowledge layer (1), FAQ content ingestion (2), FAQ admin UI (3),
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
   versioning (7), funnel stage criteria (8), manual message line breaks (9), customer
-  boundary on agent configuration (10), message origin (11), contact lifecycle events (12).
-  PRDs 1–5, 8 and 9 are implemented; 6, 7, 10, 11 and 12 are proposed. PRD 10 overlaps
-  PRD 7's surface — 10 owns *who may write* agent config, 7 owns *history and undo* — so
-  changing one means re-reading the other's boundary section. PRDs 11 and 12 are the first
-  two of four projects carved out of a ~90-field customer-data dictionary: 11 owns *what
-  sent a message*, 12 owns *when things happened to the lead*, and PRD 11 §3 is the
-  boundary between them. The two still unwritten are acquisition/attribution and the
-  opportunity + quote entities. PRD 12 §5.1 is load-bearing for the upcoming
-  disqualification policy: it deliberately does not model the category taxonomy, and notes
-  that PRD 8's `MAX_OUT_ENABLED` cap leaves only one free `out` stage slot.
+  boundary on agent configuration (10), message origin (11), contact lifecycle events (12),
+  acquisition attribution (13). PRDs 1–5, 8 and 9 are implemented; 6, 7, 10, 11, 12 and 13
+  are proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who may write* agent config, 7
+  owns *history and undo* — so changing one means re-reading the other's boundary section.
+  PRDs 11, 12 and 13 are the first three of four projects carved out of a ~90-field
+  customer-data dictionary: 11 owns *what sent a message*, 12 owns *when things happened to
+  the lead*, 13 owns *where the lead came from*, and PRD 11 §3 is the boundary between 11
+  and 12. The fourth, still unwritten, is the opportunity + quote entities — all three
+  written PRDs end with the same note that their table gains a nullable `opportunityId`
+  when it lands. Two sections carry decisions the rest of the work leans on: PRD 12 §5.1
+  deliberately does not model the disqualification taxonomy (and notes that PRD 8's
+  `MAX_OUT_ENABLED` cap leaves only one free `out` stage slot), and PRD 13 §3.1 establishes
+  that "direct" and "referred" are indistinguishable at the webhook, so neither is ever
+  inferred.
 - **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
   written from a PRD before execution. See `docs/plans/README.md`.
 

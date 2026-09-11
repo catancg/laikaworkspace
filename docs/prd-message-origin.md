@@ -19,9 +19,13 @@ Human Team, AI/Costs, Historical), tagged MVP1 through MVP3, to be stored now an
 Most of it is a storage question with a known answer: `Contact`, `Message`, `Sale`, `SaleItem`,
 `AiUsage` and `Product` already hold a large share of the MVP1 rows. Three groups need entities that
 do not exist (opportunity, quote, and any history of anything). One group — Acquisition — is empty,
-and its one existing field is a constant: `Contact.source` is written as the literal `'WhatsApp'` at
-[crm.service.ts:525](../soylaika.backend/src/crm/crm.service.ts), which means the `clientsBySource`
-breakdown on the resultados screen has always had exactly one bucket.
+and its one existing field records the wrong thing: `Contact.source` is written as a literal at
+contact creation — `'WhatsApp'` in
+[whatsapp.service.ts:105](../soylaika.backend/src/whatsapp/whatsapp.service.ts) and
+[crm.service.ts:525](../soylaika.backend/src/crm/crm.service.ts), `'Instagram'` in
+[instagram.service.ts:111](../soylaika.backend/src/instagram/instagram.service.ts). So it holds the
+*channel*, which the `platform` column already holds, and never the acquisition source. The
+`clientsBySource` breakdown on the resultados screen has two buckets and neither is a source.
 
 This PRD is none of those. It is the smallest piece, taken first, because it is the only one that is
 **losing data every day it is not built**.
