@@ -51,9 +51,13 @@ at runtime.
   in numbering order: RAG knowledge layer (1), FAQ content ingestion (2), FAQ admin UI (3),
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
   versioning (7), funnel stage criteria (8), manual message line breaks (9), customer
-  boundary on agent configuration (10). PRDs 1–5, 8 and 9 are implemented; 6, 7 and 10 are
-  proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who may write* agent config, 7 owns
-  *history and undo* — so changing one means re-reading the other's boundary section.
+  boundary on agent configuration (10), message origin (11). PRDs 1–5, 8 and 9 are
+  implemented; 6, 7, 10 and 11 are proposed. PRD 10 overlaps PRD 7's surface — 10 owns
+  *who may write* agent config, 7 owns *history and undo* — so changing one means
+  re-reading the other's boundary section. PRD 11 is the first of four projects carved out
+  of a ~90-field customer-data dictionary; it owns *what sent a message*, and the event log
+  that will own *when things happened* is its sibling (PRD 12, not yet written) — §3 of 11
+  is the boundary.
 - **`docs/plans/`** — dated step-by-step implementation plans (`YYYY-MM-DD-<feature>.md`),
   written from a PRD before execution. See `docs/plans/README.md`.
 
