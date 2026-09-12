@@ -52,8 +52,13 @@ at runtime.
   FAQ bulk import (4), RAG system test (5), agent evaluation suite (6), agent config
   versioning (7), funnel stage criteria (8), manual message line breaks (9), customer
   boundary on agent configuration (10), message origin (11), contact lifecycle events (12),
-  acquisition attribution (13), quote capture (14), funnel re-entry (15). PRDs 1–5, 8,
-  9, 11, 12, 13 and 14 are implemented; 6, 7, 10 and 15 are proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who
+  acquisition attribution (13), quote capture (14), funnel re-entry (15), lead
+  disqualification (16). **Do not trust this line, or a PRD's own `Status:` header — both have
+  been wrong.** PRDs 12 and 15 each read "proposed" while their code was merged and their
+  migration applied; designing against that turns an edit into a destructive migration across
+  every tenant database. Verify with `git log` in `soylaika.backend` and grep `src/` for the
+  identifiers the PRD proposes. As of 2026-09-12: 1–5, 8, 9 and 11–16 implemented; 6, 7 and 10
+  proposed. PRD 10 overlaps PRD 7's surface — 10 owns *who
   may write* agent config, 7 owns *history and undo* — so changing one means re-reading the
   other's boundary section. PRDs 11–14 come from one ~90-field customer-data dictionary,
   split by what is structurally missing rather than by topic: 11 owns *what sent a message*,
@@ -144,7 +149,30 @@ anything unregistered to **every active tenant's database**. Failures are swallo
   be pre-applied before a deploy.
 
 Never run migrations, seeds, or destructive SQL against an existing tenant or production
-database. Create a throwaway database, use it, drop it.
+database. Create a throwaway database, use it, drop it. `psql` and `createdb` are **not on PATH** —
+Postgres runs in the container `soylaikabackend-postgres-1` with 5432 published, so reach it as
+`docker exec -e PGPASSWORD=<from docker-compose/.env> soylaikabackend-postgres-1 psql -U postgres -d <db>`.
+
+Two more that cost real time:
+
+- **A new migration applies itself the moment the watcher reloads.** Editing any `src/**` file
+  restarts `nest start --watch`, and boot runs the tenant migration runner. Author and verify a
+  migration somewhere else, then move it into `prisma/migrations/` — a half-written one that gets
+  applied is recorded as applied, and fixing the file will not re-run it.
+- **`prisma generate` runs only inside `npm run build`** — no postinstall hook, and `start:dev`
+  does not do it. Since you must not build while the dev server is running, the generated client
+  goes stale after any schema change, and a new column then reads back as `undefined` rather than
+  `null` — so a `!== null` guard is true for every row. That has already caused one real defect.
+  Run `npx prisma generate` by hand after touching the schema.
+
+### Notifications are written tenant-side and read master-side
+
+Everything that actually reaches a person — `handoff.service.ts`, `message.processor.ts` — writes
+`db.notification` on the **tenant** handle, where that tenant's users live. `NotificationsService`
+writes and reads through `PrismaService`, which is the **master** database; its `createForBranch`
+has no callers, and the CRM bell returns nothing for a tenant user because the read path queries
+master. Write notifications on the tenant handle. The read path is a known, unfixed gap — see
+[docs/prd-lead-disqualification.md](docs/prd-lead-disqualification.md) §4.3.
 
 ### There is no global `ValidationPipe`
 
@@ -177,10 +205,11 @@ control until a test asserts on it.**
 
 - `lib/api.ts` is the entire backend contract in one file. Every API-touching feature edits it,
   which makes it the most likely merge conflict in the repo.
-- Several CRM screens keep their **own hardcoded copy** of backend enums — funnel stage names and
-  colours live in `contacts/page.tsx`, `resultados/page.tsx` and `inicio/page.tsx`. Changing
-  something backend-side that these duplicate means changing them too, or the feature ships
-  looking broken. See [docs/prd-funnel-stage-criteria.md](docs/prd-funnel-stage-criteria.md) §8.
+- **Stage names and colours are no longer duplicated in the CRM** — PRD 8 §8 removed those maps.
+  `lib/stage-style.ts` derives the badge from `stage.color`, and screens fetch the list through
+  `api.funnel.stages()`, so a new backend stage renders and filters with no frontend change. This
+  bullet used to say the opposite and cite the very PRD that fixed it, which sent a session hunting
+  maps that no longer exist. Grep before believing any claim of a hardcoded copy.
 - `npm run lint` starts from a **non-zero baseline** (`react-hooks/set-state-in-effect`). Record
   the count before you change anything and do not grow it — there is no test suite to catch
   regressions otherwise.
