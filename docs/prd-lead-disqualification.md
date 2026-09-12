@@ -505,6 +505,10 @@ Two tests exist specifically because what they pin is invisible and will rot sil
 - **No `Opportunity` entity.** As with PRDs 11–15, the tables here gain a nullable `opportunityId` if
   it ever lands. PRD 15 §2 is the record of why it has not.
 
+The review findings this work left deliberately unfixed — the ones that are about the code rather
+than the product — are listed in [hallazgos-diferidos.md](hallazgos-diferidos.md), with the reason
+each was parked. Several explain why the obvious fix is the wrong one.
+
 Two more, both decided during implementation rather than planned:
 
 - **The dimension is recorded but not yet surfaced for the three new stages.** §5 cites the bulk-send
