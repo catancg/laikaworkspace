@@ -111,13 +111,17 @@ already carries.
 - **All three repos are on `main` and fully pushed.** PRD 16 is released: the tenant migration
   `20260917120000_lead_disqualification` was pre-applied to production (one active tenant, `itt`)
   and both services were pushed afterwards, in that order. Branch from `main` normally.
-- **`no-interesado` is seeded but DISABLED for `itt`, on purpose.** That tenant's `perdido`
-  criteria is hand-edited and still catches *"no me interesa"*, so the migration's guard correctly
-  declined to rewrite it — which left two stages competing for the same customer sentence in the
-  classifier prompt. Disabling the new one removes the ambiguity and keeps them at four active
-  `out` stages, exactly at `MAX_OUT_ENABLED`. Turning it on means first deciding what `perdido`
-  should mean for them. `itt` also carries a junk `out` stage called `asd`, still active, still
-  costing a criteria block in every classification.
+- **`no-interesado` is seeded but DISABLED for `itt`, on purpose — and that is a configuration
+  decision for the platform, not a pending code task.** That tenant's `perdido` criteria is
+  hand-edited and still catches *"no me interesa"*, so the migration's guard correctly declined to
+  rewrite it, which left two stages competing for the same customer sentence in the classifier
+  prompt. Enabling it means first deciding what `perdido` should mean for that tenant; both are
+  editable from the superadmin funnel panel now (PRD 16 added the controls), so this is done in the
+  product, not in the repo.
+- **`itt` sits at 3 active `out` stages against a cap of 4**, so there is room for
+  `no-interesado` whenever that decision is made. A junk test stage called `asd` (criteria
+  `"asdasdsa"`, zero contacts, zero events) was disabled on 2026-09-12; it had been shipping its
+  criteria to the classifier on every message.
 - **The silence sweep of PRD 16 runs hourly — locally AND in production now.** A BullMQ
   repeatable job fires against every active tenant; it has already moved local `client_tenant_dev`
   leads into out-stages, and it began running against `itt` once the deploy came up. If leads change stage while you are working on something unrelated, that is why —
