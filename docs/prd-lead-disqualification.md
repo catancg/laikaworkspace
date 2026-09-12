@@ -221,16 +221,40 @@ treats the two phrasings as one intent.
 ### 4.3 The quoted lead: notify, do not close
 
 `cotizado` gets a longer window and a NULL target. When it expires the bot does **not** disqualify —
-it notifies the branch through `NotificationsService.createForBranch` and leaves the lead where it
-is. A human decides between `perdido` and another attempt.
+it notifies the branch and leaves the lead where it is. A human decides between `perdido` and another
+attempt.
 
 This is the one rule where automatic closure was rejected on purpose: a quoted lead is the most
 commercially valuable state in the funnel, and the bot should not be the thing that writes it off.
 
-Two notes on the mechanism. `notifyOnEnter` exists on `FunnelStage`, is editable through the funnel
-controller, and **is read by nothing in `src/`** — it is a dead flag today, so it is not the hook.
-And the notification must fire once, not once per sweep: the sweep records a `ContactEvent` for the
-notification and skips contacts that already have one for the current silence window.
+**Corrected during implementation.** This section originally said the alert goes through
+`NotificationsService.createForBranch`, and that the sweep de-duplicates by recording a
+`ContactEvent`. Both were wrong.
+
+`NotificationsService` writes through `PrismaService`, which is the **master** database, and resolves
+its recipients there too. A tenant's users and contacts live in that tenant's own database, so the
+call would have written a row addressed to a `userId` that exists nowhere in that database —
+a notification received by nobody, with nothing reporting the failure. It also has no callers
+anywhere in `src/`. Every notification that actually reaches a person in this codebase is written
+against the tenant `db`: [handoff.service.ts:63](../soylaika.backend/src/notifications/handoff.service.ts)
+and [message.processor.ts:374](../soylaika.backend/src/queue/message.processor.ts). The sweep follows
+that precedent — tenant `db`, recipients resolved there, and the whole sales team when the contact
+has no branch, because skipping those would drop the alert for exactly the leads nobody owns.
+
+The de-duplication does **not** add a `ContactEvent` type. PRD 12 §3 keeps that set closed and small,
+and "a human was told" is not a fact about the lead's lifecycle. The `Notification` rows are their own
+marker: the sweep skips a contact that already has one, titled the same, created after the customer's
+last inbound message — so it re-arms if the customer writes and goes quiet again.
+
+`notifyOnEnter` exists on `FunnelStage`, is editable through the funnel controller, and **is read by
+nothing in `src/`** — it is a dead flag today, so it was never the hook.
+
+**Known limitation, not fixed here.** The notification *read* path is master-scoped while every write
+path is tenant-scoped: `NotificationsController` never touches `req.tenantDb`, so the CRM bell returns
+nothing for a tenant user. This is pre-existing — handoff alerts have never reached the bell either —
+and fixing it changes a shipped feature's behaviour, so it belongs to its own change. Until then the
+alert is written, durable and correct, but invisible; the lead simply stays in `cotizado`, which is
+the safe failure.
 
 ---
 
@@ -480,3 +504,20 @@ Two tests exist specifically because what they pin is invisible and will rot sil
 - **No fix for spam that keeps writing** (§6.5).
 - **No `Opportunity` entity.** As with PRDs 11–15, the tables here gain a nullable `opportunityId` if
   it ever lands. PRD 15 §2 is the record of why it has not.
+
+Two more, both decided during implementation rather than planned:
+
+- **The dimension is recorded but not yet surfaced for the three new stages.** §5 cites the bulk-send
+  origin filter ([crm.service.ts:531](../soylaika.backend/src/crm/crm.service.ts)) as
+  `previousStageId`'s existing consumer. Implementation converted the two *write* gates from `isLost`
+  to `kind === 'out'` and deliberately left that *read* gated on `isLost`, so it still applies to
+  `perdido` alone. Nothing over-sends — the CRM gates identically — but choosing which stages become
+  bulk-reachable changes who receives real WhatsApp templates, and that is a product decision, not a
+  consequence of this PRD.
+- **A tenant with a custom `out` stage ends up one over the cap.** The migration inserts
+  `no-calificado` and `no-interesado` enabled, unconditionally. A tenant already at three enabled
+  `out` stages lands at five against a `MAX_OUT_ENABLED` of four — `checkCaps` only forbids making
+  things worse, so they are not trapped, but their classifier prompt carries five criteria blocks on
+  every message, above what §2.3 budgeted, without anyone choosing it. Seeding the new stages disabled
+  would contradict this PRD's own intent that they work on day one, so the trade was taken knowingly.
+  Worth a per-tenant check before deploying.
