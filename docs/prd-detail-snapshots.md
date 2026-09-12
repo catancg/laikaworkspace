@@ -5,9 +5,12 @@
 **Related:**
 - [PRD 12 — Contact lifecycle event log](prd-contact-lifecycle-events.md) — §5.2 excluded arbitrary
   field history on purpose. This PRD is the narrow exception, for one field, at two moments.
-- **PRD 16 — Automatic lead disqualification** — **§4 of this PRD is blocked on it.** 16 reshapes the
-  re-entry schema (its §6.3 replaces PRD 15's two booleans with a nullable FK), and §4.2 below
-  explains why this PRD deliberately does not depend on that shape either way.
+- [PRD 16 — Automatic lead disqualification](prd-lead-disqualification.md) — **shipped and
+  deployed.** While this PRD was being written, 16's draft announced that its §6.3 would *replace*
+  PRD 15's two re-entry booleans. **It does not** — the final §6.3 keeps them and adds a nullable
+  `reentryTargetId` override that falls back to the global target. §4.2 below was written to be
+  independent of that schema either way, which is still the right call for a different reason than
+  the one first given.
 - [PRD 15 — Funnel re-entry](prd-funnel-reentry.md) — made the problem in §1.2 reachable in practice.
 
 ---
@@ -183,17 +186,29 @@ re-entry.
 This is the design consequence of PRD 16 landing at the same time.
 
 The obvious implementation reads the stage rows: snapshot when `toStage.isWon`, or when
-`fromStage.reentersOnReply`. **That second half is exactly the schema PRD 16 §6.3 replaces**, swapping
-PRD 15's two booleans for a nullable FK because a four-stage taxonomy needs a per-source destination
-that one global target cannot express.
+`fromStage.reentersOnReply`.
+
+**Corrected while PRD 16 was in flight.** This section originally said that second half was "exactly
+the schema PRD 16 §6.3 replaces". It is not: 16's final §6.3 is titled *"A per-source override, not a
+replacement"*, keeps PRD 15's two booleans, and adds a nullable `reentryTargetId` on the source row
+that falls back to the global target when NULL. It considers the collapse and rejects it, because
+replacing a shipped and migrated schema costs a destructive migration across every tenant database
+to benefit one seeded row.
+
+So the re-entry columns are stable after all. Reading them would not have broken.
 
 So this PRD does not read those columns at all. The snapshot hangs off **what
 `ContactLifecycleService` already knows it is doing** — it is the chokepoint every transition goes
 through, and it decides "this is a re-entry" however the schema of the day expresses it. Whether
 re-entry is two booleans, one FK, or something PRD 16 has not written yet, the trigger is unchanged.
 
-That is why Part B is *sequenced* after PRD 16 rather than *coupled* to it. The blocker is only that
-both touch `ContactLifecycleService` and the funnel tables in the same working tree.
+The decision stands anyway, for the reason that survives: the snapshot is about *what the lifecycle
+service is doing*, not about how the funnel happens to be configured. Reading `reentersOnReply` here
+would couple a history feature to a configuration flag it has no business knowing about — and it
+would have to change again the day a third mechanism decides what counts as re-entry.
+
+**Part B is no longer blocked.** PRD 16 is merged and deployed; the sequencing note that used to sit
+here is spent.
 
 ### 4.3 Guarded, not atomic — unlike PRD 12
 
@@ -251,5 +266,5 @@ type-checks clean.
 in the funnel. It is also the half the requirement was actually about — metrics over the existing
 customer base.
 
-**Part B waits for PRD 16** to merge, then implements against whatever re-entry looks like on the
-other side. Nothing in §4 needs revising if that schema changes; §4.2 is written to make that true.
+**Part B is unblocked.** PRD 16 merged and deployed without touching PRD 15's re-entry columns, so
+§4 needs no revision — which §4.2 was written to guarantee regardless of which way that went.
