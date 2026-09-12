@@ -102,6 +102,31 @@ asking for help revising bot prompt text rather than backend/frontend code — s
 [soylaika.backend/doc/agentes-e-info-del-negocio.md](soylaika.backend/doc/agentes-e-info-del-negocio.md)
 for the code-level counterpart.
 
+## State of this working tree — 2026-09-12
+
+**This section is transient. Verify it before trusting it, and delete it once it stops being
+true** — a stale note here is worse than none, which is the lesson the PRD-status line above
+already carries.
+
+- **All three repos are on `main`, and local `main` is AHEAD of `origin/main`** (at the time of
+  writing: backend 20, frontend 4, workspace 9 — check with
+  `git rev-list --count origin/main..HEAD`). Nothing has been pushed. Branch from local `main`,
+  not from `origin/main`: PRD 16 is only local and it touched `funnel-criteria.ts`,
+  `crm.service.ts` and `tenants.controller.ts`, so branching from the remote just moves the
+  conflict later. Expect those commits in your diff.
+- **The silence sweep of PRD 16 is running on this machine.** A BullMQ repeatable job fires
+  hourly against every active tenant and has already moved local `client_tenant_dev` leads into
+  out-stages. If leads change stage while you are working on something unrelated, that is why —
+  every move writes a `ContactEvent` with `actorKind: 'system'` and a reason naming the rule.
+- **Two feature branches belong to other sessions**: `prd17-detail-snapshots` here, and
+  `prd10-business-review-ui` in `soylaika.frontend`. Both are committed and safe. The frontend
+  working tree was switched off the second one, so its dev server shows `main` until someone
+  checks it back out.
+- **Next free PRD number is 18.** 16 is on `main`; 17 exists only on its branch.
+- [docs/hallazgos-diferidos.md](docs/hallazgos-diferidos.md) lists what PRD 16's review found and
+  deliberately did not fix, with the reason for each — several explain why the obvious fix is the
+  wrong one.
+
 ## Working safely in this workspace
 
 Things that have actually gone wrong here, or that would go wrong for a session assuming the
