@@ -102,21 +102,25 @@ asking for help revising bot prompt text rather than backend/frontend code — s
 [soylaika.backend/doc/agentes-e-info-del-negocio.md](soylaika.backend/doc/agentes-e-info-del-negocio.md)
 for the code-level counterpart.
 
-## State of this working tree — 2026-09-12
+## State of this working tree — 2026-09-12 (updated after the PRD 16 release)
 
 **This section is transient. Verify it before trusting it, and delete it once it stops being
 true** — a stale note here is worse than none, which is the lesson the PRD-status line above
 already carries.
 
-- **All three repos are on `main`, and local `main` is AHEAD of `origin/main`** (at the time of
-  writing: backend 20, frontend 4, workspace 9 — check with
-  `git rev-list --count origin/main..HEAD`). Nothing has been pushed. Branch from local `main`,
-  not from `origin/main`: PRD 16 is only local and it touched `funnel-criteria.ts`,
-  `crm.service.ts` and `tenants.controller.ts`, so branching from the remote just moves the
-  conflict later. Expect those commits in your diff.
-- **The silence sweep of PRD 16 is running on this machine.** A BullMQ repeatable job fires
-  hourly against every active tenant and has already moved local `client_tenant_dev` leads into
-  out-stages. If leads change stage while you are working on something unrelated, that is why —
+- **All three repos are on `main` and fully pushed.** PRD 16 is released: the tenant migration
+  `20260917120000_lead_disqualification` was pre-applied to production (one active tenant, `itt`)
+  and both services were pushed afterwards, in that order. Branch from `main` normally.
+- **`no-interesado` is seeded but DISABLED for `itt`, on purpose.** That tenant's `perdido`
+  criteria is hand-edited and still catches *"no me interesa"*, so the migration's guard correctly
+  declined to rewrite it — which left two stages competing for the same customer sentence in the
+  classifier prompt. Disabling the new one removes the ambiguity and keeps them at four active
+  `out` stages, exactly at `MAX_OUT_ENABLED`. Turning it on means first deciding what `perdido`
+  should mean for them. `itt` also carries a junk `out` stage called `asd`, still active, still
+  costing a criteria block in every classification.
+- **The silence sweep of PRD 16 runs hourly — locally AND in production now.** A BullMQ
+  repeatable job fires against every active tenant; it has already moved local `client_tenant_dev`
+  leads into out-stages, and it began running against `itt` once the deploy came up. If leads change stage while you are working on something unrelated, that is why —
   every move writes a `ContactEvent` with `actorKind: 'system'` and a reason naming the rule.
 - **Two feature branches belong to other sessions**: `prd17-detail-snapshots` here, and
   `prd10-business-review-ui` in `soylaika.frontend`. Both are committed and safe. The frontend
