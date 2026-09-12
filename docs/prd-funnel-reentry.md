@@ -1,6 +1,7 @@
 # PRD 15 — Funnel re-entry for customers who already bought
 
-**Status:** proposed
+**Status:** implementado — mergeado en `main` (`11c19d4`, PR #16), migración
+`20260916120000_funnel_reentry`
 **Repos:** `soylaika.backend` + this doc — two commits
 **Related:**
 - [PRD 8 — Per-tenant funnel stage names and criteria](prd-funnel-stage-criteria.md) — §7 and §14 q1
@@ -8,6 +9,13 @@
   it. §2's frozen slugs and §9's "day one behaves identically" both constrain the design below.
 - [PRD 12 — Contact lifecycle event log](prd-contact-lifecycle-events.md) — the reason this PRD is
   small. See §2.
+- [PRD 16 — Automatic lead disqualification](prd-lead-disqualification.md) — adds a **per-source
+  override** on top of §3, without changing it. 16 introduces three more `out` stages, one of which
+  (`no-calificado`, which catches spam) must not re-enter at `interesado` like the others. §3.3's
+  single global target cannot express that, so 16 adds a nullable `reentryTargetId` on the source
+  row that falls back to this PRD's target when NULL. Everything here keeps working unchanged; see
+  PRD 16 §6.3 for why the alternative — replacing these two booleans — was rejected once this had
+  shipped.
 
 ---
 
